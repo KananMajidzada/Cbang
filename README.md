@@ -163,6 +163,6 @@ on anything big.
 
 ## License
 
-MIT. Do what you want with it.
+MIT.
 
 Written by Kanan Majidzada.
