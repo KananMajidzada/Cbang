@@ -1,168 +1,161 @@
-# C! (C-Bang)
+C! (C-Bang)
+===========
 
-A small systems programming language that compiles to C.
+C! is a systems programming language. It compiles to C, then
+calls your C compiler to build a binary. Files end in .cb.
 
-No preprocessor. No macros. No headers. Fixed-width types, `use` for modules,
-and a `defer` that actually works. You write `.cb`, you get a binary.
+There is no preprocessor, no macros, no headers.
 
-```c
-use std.io;
+    use std.io;
 
-pub fn main() i32 {
-    io.print("Hello, World!\n");
-    return 0;
-}
-```
+    pub fn main() i32 {
+        io.print("hello, world\n");
+        return 0;
+    }
 
-## Build
 
-Needs a C compiler (`cc`) and `make`.
+Building
+--------
 
-```sh
-make
-./build/cbang build hello.cb
-./hello
-```
+You need a C compiler and make.
 
-## Tutorial
+    make
+    ./build/cbang build hello.cb
+    ./hello
 
-### Variables
 
-Every type is fixed-width. You always know how big things are.
+Types
+-----
 
-```c
-var age: u8 = 25;
-var price: f64 = 9.99;
-var on: bool = true;
-var name: str = "Kanan";
-```
+Every type is fixed width. You always know how big things are.
 
-`const` for things that don't change.
+    i8  i16  i32  i64
+    u8  u16  u32  u64
+    f32  f64
+    bool  str  void  uintptr
 
-```c
-const MAX: u32 = 100;
-```
+    var age: u8 = 25;
+    var price: f64 = 9.99;
+    var name: str = "kanan";
+    const MAX: u32 = 100;
 
-### Functions
 
-```c
-fn add(a: i32, b: i32) i32 {
-    return a + b;
-}
+Functions
+---------
 
-pub fn main() i32 {
-    var sum: i32 = add(2, 3);
-    return 0;
-}
-```
+    fn add(a: i32, b: i32) i32 {
+        return a + b;
+    }
 
-`pub` means other files can call it. Without `pub`, it stays private to the file.
+    add(2, 3);
 
-### Control flow
+pub makes a function visible outside its file. Without pub it
+stays local, like static in C.
 
-```c
-if (age >= 18) {
-    io.print("adult\n");
-} else {
-    io.print("kid\n");
-}
 
-var i: i32 = 0;
-while (i < 10) {
-    i = i + 1;
-}
+Control flow
+------------
 
-for (var j: i32 = 0; j < 10; j = j + 1) {
-    io.print("tick\n");
-}
+    if (x < 10) {
+        ...
+    } else {
+        ...
+    }
 
-switch (day) {
-    case 1: { io.print("monday\n"); }
-    case 2: { io.print("tuesday\n"); }
-}
-```
+    while (x < 10) {
+        x = x + 1;
+    }
 
-### Structs and pointers
+    for (var i: i32 = 0; i < 10; i = i + 1) {
+        io.print("tick\n");
+    }
 
-```c
-struct Point {
-    i32 x;
-    i32 y;
-}
+    switch (day) {
+        case 1: { io.print("monday\n"); }
+        case 2: { io.print("tuesday\n"); }
+    }
 
-pub fn main() i32 {
+Conditions must be bool or int. No truthiness beyond that.
+
+
+Structs and pointers
+--------------------
+
+    struct Point {
+        i32 x;
+        i32 y;
+    }
+
     var p: Point;
     p.x = 10;
 
-    var q: *Point = &p;     // q points at p
-    q.x = 20;               // pointer auto-derefs, same as q->x in C
+    var q: *Point = &p;
+    q.x = 20;          /* same as q->x in C */
 
-    return p.x;             // 20
-}
-```
+Pointers look like C: *T to declare, & to take an address, *
+to dereference. The . operator works through a pointer, so you
+rarely need ->.
 
-Pointers are explicit like C. But `.` works through them, so you don't
-drown in arrows.
 
-### defer
+defer
+-----
 
-Run cleanup when a scope exits — even on early `return`. Last one registered,
-first one to run (LIFO).
+defer runs a block when its scope is left, early return
+included. They run in reverse order, last one registered runs
+first.
 
-```c
-fn process() i32 {
-    defer { io.print("done\n"); }
-    defer { io.print("closing file\n"); }
+    fn run() i32 {
+        defer { io.print("second\n"); }
+        defer { io.print("first\n"); }
 
-    io.print("working\n");
-    return 0;
-}
-// prints: working, closing file, done
-```
+        io.print("working\n");
+        return 0;
+    }
 
-### Casting
+prints: working, first, second.
 
-Explicit with `as`. No surprise conversions.
 
-```c
-var x: i32 = 42;
-var big: i64 = x as i64;
-var addr: uintptr = &x as uintptr;
-```
+Casting
+-------
 
-### Modules
+Casts are explicit. Nothing converts behind your back.
 
-```c
-use std.io;    // io.print("text\n")
-use std.os;    // os.exit(1)
-```
+    var x: i32 = 42;
+    var big: i64 = x as i64;
+    var addr: uintptr = &x as uintptr;
 
-## What's in the box
 
-| Module   | Functions      |
-|----------|----------------|
-| `std.io` | `io.print(str)` |
-| `std.os` | `os.exit(code)` |
+Modules
+-------
 
-Small on purpose. More coming.
+    use std.io;     io.print("text\n")
+    use std.os;     os.exit(1)
 
-## How it works
+That is all there is for now. More will come.
 
-`cbang` reads your `.cb` file, checks it, and writes a `.c` file. Then it
-calls `cc` to build the binary. You can read the generated C — it's clean.
 
-```
-hello.cb  ->  lexer  ->  parser  ->  type checker  ->  hello.c  ->  cc  ->  hello
-```
+The compiler
+------------
 
-## Status
+cbang is written in C, about 3500 lines. It reads your .cb
+file, type-checks it, writes a .c file, and runs cc.
 
-Working but young. Type checker, structs, pointers, defer, switch — all
-functional and tested. Standard library is minimal. Not yet battle-tested
-on anything big.
+    .cb -> lexer -> parser -> checker -> .c -> cc -> binary
 
-## License
+The generated C is clean under -Wall -Wextra. You can read it,
+it is not obfuscated.
+
+
+Status
+------
+
+v0.1. It works, but it is young. The standard library is
+small and nothing big has been written in it yet.
+
+
+License
+-------
 
 MIT.
 
-Written by Kanan Majidzada.
+Copyright (c) Kanan Majidzada. All rights reserved.
