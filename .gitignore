@@ -1,0 +1,12 @@
+# build output
+build/
+
+# generated C files
+examples/*.c
+*.o
+
+# binaries
+*.out
+hello
+keywords
+simple

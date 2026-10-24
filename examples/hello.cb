@@ -1,0 +1,20 @@
+use std.io;
+
+pub fn add(a: i32, b: i32) i32 {
+    return a + b;
+}
+
+pub fn main() i32 {
+    io.print("Hello, World!\n");
+
+    var x: i32 = add(40, 2);
+    if (x == 42) {
+        io.print("The answer is 42\n");
+    }
+
+    for (var i: u32 = 0; i < 3; i = i + 1) {
+        io.print("tick\n");
+    }
+
+    return 0;
+}
