@@ -1,8 +1,8 @@
 # C! (CBang)
 
-CBang is a small systems programming language (*FOR NOW*) that compiles to C. It provides fixed-width types, `defer`, structs, unions, enums, pointers, and a type checker that reports errors with line and column information.
+CBang is a systems programming language built to be a modern alternative to C. It is in early development and currently compiles to C, with fixed-width types, defer, structs, unions, enums, pointers, and precise compiler diagnostics.
 
-The compiler is written in C and produces clean C output that builds without warnings under `-Wall -Wextra`.
+The compiler is currently written in C and targets C as its backend. Its generated output builds warning-free under -Wall -Wextra.
 
 ## Table of Contents
 
