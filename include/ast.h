@@ -216,12 +216,14 @@ struct ASTNode {
         struct {
             ASTNode *base;
             ASTNode *index;
+            bool base_is_str;   /* set by sema: base is a `str`, not a pointer */
         } index;
 
         /* FIELD */
         struct {
             ASTNode *base;
             Token field_name;
+            bool on_str;        /* set by sema: base is a `str` */
         } field;
 
         /* VAR_REF */

@@ -138,6 +138,83 @@ void ast_free(ASTNode *n) {
 }
 
 /* ========================================================================== */
+/* Deep Clone                                                                 */
+/* ========================================================================== */
+
+/*
+ * Why this exists: compound assignment desugaring reuses the same sub-tree
+ * twice.  `a[i] += v` becomes  a[i] = a[i] + v  — the `a[i]` node is needed
+ * in two places, but the AST is a tree, not a graph: every node is freed by
+ * its parent.  Sharing one node between two parents means it gets freed
+ * twice (use-after-free / double free).  So we clone.
+ */
+static ASTNode *ast_clone(ASTNode *n);
+static ASTNodeList *list_clone(ASTNodeList *l);
+
+/* Types are heap-allocated and owned by their node (ast_free frees them),
+   so a cloned node needs its own copy.  Pointers are walked; names alias
+   the source text, which lives as long as the program. */
+static Type *type_clone(Type *t) {
+    if (!t) return NULL;
+    Type *c = calloc(1, sizeof(Type));
+    if (!c) { fprintf(stderr, "oom\n"); exit(1); }
+    memcpy(c, t, sizeof(Type));
+    if (t->kind == TYPE_POINTER)
+        c->data.pointer.pointee = type_clone(t->data.pointer.pointee);
+    return c;
+}
+
+static ASTNode *ast_clone(ASTNode *n) {
+    if (!n) return NULL;
+    ASTNode *c = calloc(1, sizeof(ASTNode));
+    if (!c) { fprintf(stderr, "oom\n"); exit(1); }
+    memcpy(c, n, sizeof(ASTNode));   /* copy token + scalar fields */
+
+    switch (n->type) {
+        case AST_BINARY:
+            c->data.binary.left  = ast_clone(n->data.binary.left);
+            c->data.binary.right = ast_clone(n->data.binary.right);
+            break;
+        case AST_UNARY:
+            c->data.unary.operand = ast_clone(n->data.unary.operand);
+            break;
+        case AST_FIELD:
+            c->data.field.base = ast_clone(n->data.field.base);
+            break;
+        case AST_INDEX:
+            c->data.index.base  = ast_clone(n->data.index.base);
+            c->data.index.index = ast_clone(n->data.index.index);
+            break;
+        case AST_CALL:
+            c->data.call.callee = ast_clone(n->data.call.callee);
+            c->data.call.args   = list_clone(n->data.call.args);
+            break;
+        case AST_CAST:
+            c->data.cast.expr = ast_clone(n->data.cast.expr);
+            c->data.cast.target_type = type_clone(n->data.cast.target_type);
+            break;
+        case AST_SIZEOF: case AST_ALIGNOF:
+            c->data.sizeof_alignof.target_type = type_clone(n->data.sizeof_alignof.target_type);
+            break;
+        case AST_VAR_DECL: case AST_CONST_DECL:
+            c->data.var_decl.var_type = type_clone(n->data.var_decl.var_type);
+            c->data.var_decl.init = ast_clone(n->data.var_decl.init);
+            break;
+        default:
+            break;  /* leaves: literals, var refs, field names */
+    }
+    return c;
+}
+
+static ASTNodeList *list_clone(ASTNodeList *l) {
+    ASTNodeList *out = list_new();
+    if (!l) return out;
+    for (size_t i = 0; i < l->count; i++)
+        list_push(out, ast_clone(l->items[i]));
+    return out;
+}
+
+/* ========================================================================== */
 /* Type Helpers                                                               */
 /* ========================================================================== */
 
@@ -502,7 +579,10 @@ static ASTNode *parse_assignment(Parser *p) {
         }
         ASTNode *bin = node_alloc(AST_BINARY, op);
         bin->data.binary.op = binop;
-        bin->data.binary.left = left;
+        /* `left` appears twice (target of = and operand of +). The AST frees
+           each node exactly once, so the second copy must be a deep clone —
+           otherwise it's freed twice and the heap corrupts. */
+        bin->data.binary.left = ast_clone(left);
         bin->data.binary.right = right;
 
         ASTNode *assign = node_alloc(AST_BINARY, op);

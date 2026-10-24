@@ -53,6 +53,7 @@ typedef struct {
 static FnSym fn_table[MAX_FUNCS];    static size_t fn_count;
 static StructSym struct_table[MAX_TYPES]; static size_t struct_count;
 static VarSym global_table[MAX_VARS];    static size_t global_count;
+static VarSym alias_table[MAX_TYPES];    static size_t alias_count;   /* type X = Y */
 
 /* Local scope stack: each scope is a list of vars */
 static VarSym scope_stack[MAX_SCOPES][128];
@@ -115,10 +116,14 @@ static Type g_int_lit = { .kind = TYPE_NAMED, .data.named = { "__int_lit__", 11 
 #define INT_LIT (&g_int_lit)
 static bool is_int_lit(Type *t) { return t == &g_int_lit; }
 
+static Type *resolve_alias(Type *t);
+
 static bool type_is_float(Type *t) {
+    t = resolve_alias(t);
     return t && t->kind == TYPE_PRIMITIVE && (t->data.primitive == KW_F32 || t->data.primitive == KW_F64);
 }
 static bool type_is_int(Type *t) {
+    t = resolve_alias(t);
     if (!t || t->kind != TYPE_PRIMITIVE) return false;
     TokenType k = t->data.primitive;
     return (k >= KW_I8 && k <= KW_U64) || k == KW_UINTPTR;
@@ -133,8 +138,30 @@ static bool type_is_str(Type *t) {
     return t && t->kind == TYPE_PRIMITIVE && t->data.primitive == KW_STR;
 }
 
+/* Follow `type X = Y` aliases so checks see the underlying type.
+   A named type that isn't an alias (a struct/enum) is returned unchanged. */
+static Type *resolve_alias(Type *t) {
+    for (int guard = 0; t && t->kind == TYPE_NAMED && guard < 64; guard++) {
+        const char *name = t->data.named.name;
+        size_t len = t->data.named.len;
+        bool found = false;
+        for (size_t i = 0; i < alias_count; i++) {
+            if (alias_table[i].name.len == len &&
+                memcmp(alias_table[i].name.name, name, len) == 0) {
+                t = alias_table[i].type;
+                found = true;
+                break;
+            }
+        }
+        if (!found) break;
+    }
+    return t;
+}
+
 /* Structural type equality (primitive kind + pointer chains + names) */
 static bool type_eq(Type *a, Type *b) {
+    a = resolve_alias(a);
+    b = resolve_alias(b);
     if (!a || !b) return a == b;
     if (a->kind != b->kind) return false;
     switch (a->kind) {
@@ -232,12 +259,22 @@ static Type *sema_expr(ASTNode *n) {
             TokenType op = n->data.binary.op;
 
             if (op == OP_ASSIGN) {
-                /* Left must be assignable, must be mutable (skip const check for now) */
                 if (lt && !assignable(lt, rt)) {
                     char msg[256];
                     snprintf(msg, sizeof(msg), "cannot assign '%s' to '%s'",
                              type_name(rt), type_name(lt));
                     err(&n->token, msg);
+                }
+                /* const is read-only. Compound assign desugars to `=` too,
+                   so K += 1 is caught here as well. */
+                if (n->data.binary.left->type == AST_VAR_REF) {
+                    VarSym *v = lookup_var(&n->data.binary.left->data.var_ref.name);
+                    if (v && v->is_const) {
+                        char msg[256];
+                        snprintf(msg, sizeof(msg), "cannot assign to const '%.*s'",
+                                 (int)v->name.len, v->name.name);
+                        err(&n->token, msg);
+                    }
                 }
                 return lt;
             }
@@ -357,7 +394,12 @@ static Type *sema_expr(ASTNode *n) {
             Type *bt = sema_expr(n->data.index.base);
             sema_expr(n->data.index.index);
             if (bt && bt->kind == TYPE_POINTER) return bt->data.pointer.pointee;
-            if (type_is_str(bt)) return type_primitive(KW_U8);
+            if (type_is_str(bt)) {
+                /* cb_str is a {ptr,len} struct, not an array — codegen needs
+                   to know to emit `s.ptr[i]` instead of `s[i]` */
+                n->data.index.base_is_str = true;
+                return type_primitive(KW_U8);
+            }
             if (bt) {
                 char msg[256];
                 snprintf(msg, sizeof(msg), "cannot index type '%s'", type_name(bt));
@@ -386,6 +428,7 @@ static Type *sema_expr(ASTNode *n) {
 
             /* str has .len and .ptr */
             if (type_is_str(bt)) {
+                n->data.field.on_str = true;   /* .ptr needs a const cast in C */
                 if (n->data.field.field_name.length == 3 &&
                     memcmp(n->data.field.field_name.start, "len", 3) == 0)
                     return type_primitive(KW_U64);
@@ -624,6 +667,18 @@ static void collect_top_level(ASTNodeList *program) {
         }
     }
 
+    /* Pass 1d: type aliases (type X = Y) so checks can follow them */
+    for (size_t i = 0; i < program->count; i++) {
+        ASTNode *n = program->items[i];
+        if (n->type != AST_TYPE_ALIAS) continue;
+        Token *name = &n->data.type_alias.name;
+        if (alias_count < MAX_TYPES) {
+            VarSym *a = &alias_table[alias_count++];
+            a->name = (Name){ name->start, name->length };
+            a->type = n->data.type_alias.aliased_type;
+        }
+    }
+
     /* Pass 1c: globals (const/var at top level) */
     for (size_t i = 0; i < program->count; i++) {
         ASTNode *n = program->items[i];
@@ -649,7 +704,7 @@ static void collect_top_level(ASTNodeList *program) {
 
 int sema_check(ASTNodeList *program) {
     error_count = 0;
-    fn_count = struct_count = global_count = 0;
+    fn_count = struct_count = global_count = alias_count = 0;
     scope_depth = 0;
     in_defer = false;
 

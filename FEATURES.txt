@@ -1,0 +1,355 @@
+C! (C-Bang) - Complete Feature Inventory
+=========================================
+
+This file lists EVERYTHING the compiler currently has, as verified by
+testing each item. Anything listed as "not implemented" was tested and
+rejected by the compiler.
+
+Last verified: 2026-10-24
+
+
+1. KEYWORDS (40)
+================
+
+Types (14):
+    i8  i16  i32  i64
+    u8  u16  u32  u64
+    f32  f64
+    bool  str  void  uintptr
+
+Declarations (7):
+    var  const  volatile  struct  union  enum  type
+
+Control flow (11):
+    if  else  while  for  switch  case
+    return  break  continue
+    true  false
+
+Functions and modules (6):
+    fn  pub  use  extern  defer  as
+
+Memory (2):
+    sizeof  alignof
+
+Reserved but not yet implemented:
+    (none - every keyword above does something)
+
+
+2. TYPES
+========
+
+14 fixed-width primitive types. All sizes are guaranteed:
+
+    i8    signed 8-bit        u8    unsigned 8-bit
+    i16   signed 16-bit       u16   unsigned 16-bit
+    i32   signed 32-bit       u32   unsigned 32-bit
+    i64   signed 64-bit       u64   unsigned 64-bit
+    f32   32-bit float        f64   64-bit float
+    bool  true/false          str   string slice
+    void  no value            uintptr  address-sized integer
+
+Pointer types:  *T          (e.g. *i32, *Point)
+Named types:    struct, union, enum, type aliases
+
+Mapped to C as: int8_t..uint64_t, float, double, bool,
+                {const uint8_t* ptr; uint64_t len;}, void, uintptr_t
+
+
+3. LITERALS
+===========
+
+Integers:
+    42          decimal
+    0xFF        hex
+    0b1010      binary
+    0o17        octal
+
+Floats:
+    3.14
+    1.0
+
+Strings:
+    "hello"     double quotes
+
+Chars:
+    'A'         single quotes
+
+Bools:
+    true  false
+
+Escape sequences (in strings, passed to C):
+    \n  \t  \\  \"  \0  \r
+
+Escape sequences (in char literals):
+    \n  \t  \r  \0  \\  \'
+
+
+4. OPERATORS
+============
+
+Arithmetic:        +  -  *  /  %
+Compound assign:   +=  -=  *=  /=  %=
+Comparison:        ==  !=  <  >  <=  >=
+Logical:           &&  ||  !
+Bitwise:           &  |  ^  ~  <<  >>
+Bit compound:      &=  |=  ^=  <<=  >>=
+Assignment:        =
+
+Address-of:        &expr       (prefix position only)
+Dereference:       *expr       (prefix position only)
+Field access:      expr.field  (works through pointers too)
+Field access:      expr->field (explicit pointer form)
+
+Delimiters:        ( )  { }  [ ]  ,  ;  :
+
+Precedence follows C. Postfix (call, index, field) binds tightest.
+
+
+5. DECLARATIONS
+===============
+
+Variables:
+    var x: i32 = 10;
+    var y: i32;              // no initializer allowed
+
+Constants (read-only, enforced by the compiler):
+    const MAX: u32 = 100;
+    const SIZE = sizeof(i32);   // type inferred
+
+Volatile (emits C's volatile):
+    volatile var reg: u32 = 0;
+
+Structs:
+    struct Point { i32 x; i32 y; }
+
+Unions:
+    union Data { i32 i; f32 f; }
+
+Enums:
+    enum Color { RED, GREEN, BLUE }
+    enum Code { OK = 0, FAIL = 1 }     // explicit values
+
+Type aliases:
+    type usize2 = u64;
+
+Functions:
+    fn add(a: i32, b: i32) i32 { return a + b; }
+
+Visibility:
+    pub fn foo() ...     // visible outside the file
+    fn foo() ...         // private, emits C static
+
+    pub main is not required - main is never made static
+    regardless, so the linker always finds it.
+
+External C functions:
+    extern fn abs(x: i32) i32;
+    - declaration only, no body
+    - never emitted as static
+    - parameter NAMES are required (unnamed params rejected)
+    - you must have the C header/symbol available at link time
+
+Modules:
+    use std.io;
+    use std.os;
+
+
+6. STATEMENTS
+=============
+
+if / else:
+    if (cond) { ... } else { ... }
+    else if chains work
+
+while:
+    while (cond) { ... }
+
+for (3-clause only):
+    for (var i: i32 = 0; i < 10; i = i + 1) { ... }
+
+switch (C-style fallthrough - no automatic break):
+    switch (x) {
+        case 1: { ... }
+        case 2: { ... }
+    }
+    NOTE: no `default:` keyword exists yet. Tested and rejected.
+
+break / continue:
+    inside loops and switch
+
+return:
+    return;         // void functions
+    return value;
+
+defer (LIFO cleanup, runs on scope exit AND early return):
+    defer { cleanup(); }
+    - registered in order, runs in reverse
+    - runs before every return
+    - return inside defer is a compile error
+
+Blocks:
+    any { ... } block introduces its own scope
+
+Compound assignment:
+    x += 1;  x -= 1;  x *= 2;  x /= 2;  x %= 3;
+    x <<= 1; x >>= 1; x &= 2;  x |= 2;  x ^= 2;
+
+
+7. EXPRESSIONS
+==============
+
+Function calls:        add(1, 2)
+Module calls:          io.print("x"), os.exit(1)
+Casts:                 x as i64
+sizeof:                sizeof(i32)
+alignof:               alignof(f64)
+Address-of:            &x
+Dereference:           *p
+Field access:          p.x  (auto-derefs if p is a pointer)
+Indexing:              s[i]  (pointers and str)
+String member:         s.len  (u64), s.ptr  (u8*)
+Nested access:         o.in.v  (verified working)
+
+
+8. BUILT-IN MODULES
+====================
+
+std.io:
+    io.print(str)        -> writes to stdout, no newline added
+
+std.os:
+    os.exit(code)        -> exits with that code
+
+Unknown modules produce an error listing what exists.
+
+
+9. TYPE CHECKER (sema) - 24 CHECKS
+==================================
+
+All of these were tested and produce an error with line:column:
+
+    undeclared variable 'x'
+    unknown function 'foo'
+    unknown type 'Pointt'
+    unknown module 'std.foo' (available: std.io, std.os)
+    unknown io function 'foo'
+    unknown os function 'foo'
+    'add' expects 2 argument(s), got 3
+    argument 1: expected 'I32', got 'STR'
+    cannot assign 'STR' to 'I32'
+    cannot initialize 'I32' with 'STR'
+    cannot return 'STR' from function returning 'I32'
+    function must return a value
+    invalid operands 'STR' and 'int literal' to binary operator
+    cannot index type 'I32'
+    cannot dereference non-pointer type
+    type 'P' has no field 'y'
+    type 'str' has only .len and .ptr
+    duplicate function 'f'
+    duplicate type 'P'
+    duplicate global 'g'
+    if condition must be bool or int, got 'STR'
+    while condition must be bool or int, got 'STR'
+    return not allowed inside defer block
+    cannot assign to const 'K'
+
+Type rules:
+    - integer literals are untyped until context decides
+      (so `var i: u32 = 0;` works)
+    - int <-> int, int <-> float, float <-> float convert freely
+      (C-style promotion; use `as` to be explicit)
+    - 0 initializes any pointer (null pointer)
+    - conditions must be bool or int
+    - type aliases are resolved before checking
+
+
+10. COMMAND LINE
+================
+
+    cbang build file.cb              compile to binary
+    cbang build file.cb -o name      name the output
+    cbang file.cb                    parse only, print the AST
+    cbang file.cb --tokens           print the token stream
+    cbang --test                     run built-in self test
+
+Compilation chain:
+    file.cb -> lexer -> parser -> sema -> file.c -> cc -> file
+
+
+11. ERROR MESSAGES FROM THE LEXER
+=================================
+
+    [warning] string ends with '/n' - did you mean "\n"?
+        (catches forward-slash typo for newline)
+
+    [lex error] Unterminated string
+    [lex error] Unterminated char literal
+    [parse error] ... (with line:column and the offending token)
+    [type error] ... (with line:column and the offending token)
+
+
+12. NOT IMPLEMENTED (tested, compiler rejects these)
+====================================================
+
+    switch default:          no `default` keyword exists
+    fixed-size arrays        var a: [5]i32;   -> parse error
+    unnamed extern params     extern fn puts(str) i32; -> parse error
+    multi-file projects      one .cb file at a time
+    string building          only literals, .len and .ptr
+    formatting/printing numbers   io.print takes str only
+    closures / nested functions
+    generics / templates
+    method syntax on structs (no obj.method() - use free functions)
+    foreach-style loops      only the 3-clause for
+    modules beyond std.io and std.os
+    header inclusion for extern  (you declare symbols, no #include emitted)
+
+
+13. CODEGEN NOTES
+=================
+
+Emitted C is clean under -Wall -Wextra (zero warnings).
+
+Emission order:
+    1. headers, runtime string helpers
+    2. struct/union/enum/typedef/const/globals
+    3. function prototypes (all forward-declared)
+    4. function bodies
+
+Other details:
+    - private functions get C's `static`
+    - main is never static
+    - extern functions are never static
+    - defer is lowered to plain C at scope exits and returns
+    - `p.x` on a *Point becomes C's `p->x`
+    - compound assignment is desugared (a += b -> a = a + b)
+    - switch keeps C fallthrough behavior
+
+
+14. KNOWN LIMITATIONS / TODO
+============================
+
+    - small memory leaks at exit (144-336 bytes). Harmless for a
+      short-lived CLI; AddressSanitizer reports no invalid access.
+    - switch has no default case
+    - no fixed arrays
+    - io.print cannot print numbers directly
+    - break/continue outside a loop falls through to the C compiler
+      instead of being caught by sema
+    - no source snippet in error messages (no caret ^^^ line yet)
+
+
+15. SELF-TEST AND EXAMPLES
+==========================
+
+    cbang --test                  RESULT: PASS
+    examples/hello.cb             works
+    examples/keywords.cb          works (exercises all 40 keywords)
+    examples/simple.cb            works
+
+Statistics:
+    ~3,700 lines of compiler C
+    40 keywords
+    14 primitive types
+    24 type-checker diagnostics
+    2 std modules

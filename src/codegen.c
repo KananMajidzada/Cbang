@@ -180,11 +180,19 @@ static void emit_expr(Gen *g, ASTNode *n) {
             break;
         case AST_INDEX:
             emit_expr(g, n->data.index.base);
+            /* str is a {ptr,len} struct, not an array — index its ptr */
+            if (n->data.index.base_is_str) fputs(".ptr", g->out);
             fputc('[', g->out);
             emit_expr(g, n->data.index.index);
             fputc(']', g->out);
             break;
         case AST_FIELD:
+            /* str.ptr is `const uint8_t*` in C but C! has no const-pointer
+               type, so cast away const explicitly (assignment target is *u8). */
+            if (n->data.field.on_str &&
+                n->data.field.field_name.length == 3 &&
+                memcmp(n->data.field.field_name.start, "ptr", 3) == 0)
+                fputs("(uint8_t*)", g->out);
             emit_expr(g, n->data.field.base);
             if (n->token.type == OP_ARROW)
                 fputs("->", g->out);
@@ -390,6 +398,9 @@ static void emit_stmt(Gen *g, ASTNode *n) {
 /* A function gets C's `static` (file-local) unless it's pub — except `main`,
    which must stay extern or the linker won't find the entry point. */
 static bool fn_is_static(ASTNode *n) {
+    /* extern functions are defined in another translation unit or library —
+       making them static would make them unresolvable at link time. */
+    if (n->data.fn_decl.is_extern) return false;
     if (n->data.fn_decl.is_pub) return false;
     Token *name = &n->data.fn_decl.name;
     if (name->length == 4 && memcmp(name->start, "main", 4) == 0) return false;

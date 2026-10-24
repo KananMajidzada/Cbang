@@ -286,9 +286,11 @@ static Token scan_string(Lexer *lexer) {
 }
 
 static Token scan_char(Lexer *lexer) {
-    const char *start = lexer->current;
+    /* The main loop already consumed the opening quote — back up so the
+       token text includes it. The parser expects start[0]=quote, start[1]=char. */
+    const char *start = lexer->current - 1;
     size_t line = lexer->line;
-    size_t col = lexer->column;
+    size_t col = lexer->column - 1;
     
     if (PEEK() == '\\') { ADVANCE(); lexer->column++; if (PEEK()) { ADVANCE(); lexer->column++; } }
     else if (PEEK()) { ADVANCE(); lexer->column++; }
