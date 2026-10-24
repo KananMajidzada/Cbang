@@ -1,161 +1,169 @@
-C! (C-Bang)
-===========
+# C! (CBang)
 
-C! is a systems programming language. It compiles to C, then
-calls your C compiler to build a binary. Files end in .cb.
+CBang is a small systems programming language (*FOR NOW*) that compiles to C. It provides fixed-width types, `defer`, structs, unions, enums, pointers, and a type checker that reports errors with line and column information.
 
-There is no preprocessor, no macros, no headers.
+The compiler is written in C and produces clean C output that builds without warnings under `-Wall -Wextra`.
 
-    use std.io;
+## Table of Contents
 
-    pub fn main() i32 {
-        io.print("hello, world\n");
-        return 0;
-    }
+- [Getting Started](#getting-started)
+- [Compilation Pipeline](#compilation-pipeline)
+- [Command Line](#command-line)
+- [Language Overview](#language-overview)
+- [Diagnostics](#diagnostics)
+- [Limitations](#limitations)
+- [Project Status](#project-status)
+- [License](#license)
 
+## Getting Started
 
-Building
---------
+Create `hello.cb`:
 
-You need a C compiler and make.
+```
+use std.io;
 
-    make
-    ./build/cbang build hello.cb
-    ./hello
+fn main() i32 {
+    io.print("Hello, world!\n");
+    return 0;
+}
+```
 
+Build and run:
 
-Types
------
+```
+cbang build hello.cb -o hello
+./hello
+```
 
-Every type is fixed width. You always know how big things are.
+A larger example:
 
-    i8  i16  i32  i64
-    u8  u16  u32  u64
-    f32  f64
-    bool  str  void  uintptr
+```
+use std.io;
+use std.os;
 
-    var age: u8 = 25;
-    var price: f64 = 9.99;
-    var name: str = "kanan";
-    const MAX: u32 = 100;
+struct Point { i32 x; i32 y; }
 
+fn add(a: i32, b: i32) i32 {
+    return a + b;
+}
 
-Functions
----------
-
-    fn add(a: i32, b: i32) i32 {
-        return a + b;
-    }
-
-    add(2, 3);
-
-pub makes a function visible outside its file. Without pub it
-stays local, like static in C.
-
-
-Control flow
-------------
-
-    if (x < 10) {
-        ...
-    } else {
-        ...
-    }
-
-    while (x < 10) {
-        x = x + 1;
-    }
-
-    for (var i: i32 = 0; i < 10; i = i + 1) {
-        io.print("tick\n");
-    }
-
-    switch (day) {
-        case 1: { io.print("monday\n"); }
-        case 2: { io.print("tuesday\n"); }
-    }
-
-Conditions must be bool or int. No truthiness beyond that.
-
-
-Structs and pointers
---------------------
-
-    struct Point {
-        i32 x;
-        i32 y;
-    }
-
+pub fn main() i32 {
     var p: Point;
-    p.x = 10;
+    p.x = 3;
+    p.y = add(p.x, 4);
 
-    var q: *Point = &p;
-    q.x = 20;          /* same as q->x in C */
+    defer { io.print("done\n"); }
 
-Pointers look like C: *T to declare, & to take an address, *
-to dereference. The . operator works through a pointer, so you
-rarely need ->.
-
-
-defer
------
-
-defer runs a block when its scope is left, early return
-included. They run in reverse order, last one registered runs
-first.
-
-    fn run() i32 {
-        defer { io.print("second\n"); }
-        defer { io.print("first\n"); }
-
-        io.print("working\n");
-        return 0;
+    if (p.y == 7) {
+        io.print("ok\n");
     }
 
-prints: working, first, second.
+    os.exit(0);
+    return 0;
+}
+```
 
+`examples/keywords.cb` exercises every keyword in the language.
 
-Casting
--------
+## Compilation Pipeline
 
-Casts are explicit. Nothing converts behind your back.
+```
+file.cb -> lexer -> parser -> sema -> file.c -> cc -> binary
+```
 
-    var x: i32 = 42;
-    var big: i64 = x as i64;
-    var addr: uintptr = &x as uintptr;
+CBang translates source to C and invokes the system C compiler to produce the final binary.
 
+## Command Line
 
-Modules
--------
+| Command | Description |
+|---|---|
+| `cbang build file.cb` | Compile to a binary |
+| `cbang build file.cb -o name` | Compile and name the output |
+| `cbang file.cb` | Parse only and print the AST |
+| `cbang file.cb --tokens` | Print the token stream |
+| `cbang --test` | Run the built-in self test |
 
-    use std.io;     io.print("text\n")
-    use std.os;     os.exit(1)
+## Language Overview
 
-That is all there is for now. More will come.
+### Types
 
+| Category | Types |
+|---|---|
+| Signed integers | `i8` `i16` `i32` `i64` |
+| Unsigned integers | `u8` `u16` `u32` `u64` |
+| Floating point | `f32` `f64` |
+| Other primitives | `bool` `str` `void` `uintptr` |
+| Composite | pointers (`*T`), `struct`, `union`, `enum`, `type` aliases |
 
-The compiler
-------------
+All sizes are fixed and guaranteed. `str` is a string slice with `.ptr` and `.len`.
 
-cbang is written in C, about 3500 lines. It reads your .cb
-file, type-checks it, writes a .c file, and runs cc.
+### Declarations
 
-    .cb -> lexer -> parser -> checker -> .c -> cc -> binary
+```
+var x: i32 = 10;
+const MAX: u32 = 100;
+volatile var reg: u32 = 0;
 
-The generated C is clean under -Wall -Wextra. You can read it,
-it is not obfuscated.
+struct Point { i32 x; i32 y; }
+union Data { i32 i; f32 f; }
+enum Code { OK = 0, FAIL = 1 }
+type usize2 = u64;
 
+fn add(a: i32, b: i32) i32 { return a + b; }
+extern fn abs(x: i32) i32;
+```
 
-Status
-------
+Functions are private by default and emitted as `static` in C. Use `pub` to export them. `main` and `extern` functions are never `static`.
 
-v0.1. It works, but it is young. The standard library is
-small and nothing big has been written in it yet.
+### Control Flow
 
+`if` / `else`, `while`, three-clause `for`, `switch` (C-style fallthrough), `break`, `continue`, `return`.
 
-License
--------
+### Other Features
 
-MIT.
+- **`defer`** runs a block when the scope exits or the function returns, in reverse order of registration.
+- **Casts** with `as`: `x as i64`.
+- **`sizeof` and `alignof`.**
+- **Pointer field access**: `p.x` and `p->x` are both supported.
+- **Integer literals** in decimal, hexadecimal (`0xFF`), binary (`0b1010`) and octal (`0o17`).
+- **`extern fn`** for calling C functions. Declarations only; no headers are included.
 
-Copyright (c) Kanan Majidzada. All rights reserved.
+### Standard Library
+
+| Module | Function | Description |
+|---|---|---|
+| `std.io` | `io.print(str)` | Write a string to stdout (no newline added) |
+| `std.os` | `os.exit(code)` | Exit with the given code |
+
+## Diagnostics
+
+The type checker performs 24 checks, and every error includes a line and column. These cover undeclared names, unknown types and modules, argument count and type mismatches, invalid assignments and returns, missing fields, duplicate definitions, and writes to `const` values.
+
+The lexer additionally warns when a string contains `/n`, which is usually a mistyped `\n`.
+
+## Limitations
+
+Not yet supported:
+
+- `default` in `switch`
+- Fixed-size arrays
+- Generics, closures, and nested functions
+- Methods on structs (use free functions)
+- `foreach`-style loops
+- Multi-file projects
+- String building and number printing in `io.print`
+- Modules beyond `std.io` and `std.os`
+
+Known issues:
+
+- Small memory leaks at exit (144 to 336 bytes). AddressSanitizer reports no invalid access.
+- `break` and `continue` outside a loop are not caught by the type checker and are left to the C compiler.
+- Error messages do not yet include a source snippet.
+
+## Project Status
+
+CBang is under active development. The built-in self test (`cbang --test`) passes, and all programs in `examples/` build and run. Last verified 2026-10-24.
+
+## License
+
+Copyright © 2026 Kanan Majidzada. All rights reserved.
