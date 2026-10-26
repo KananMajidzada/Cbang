@@ -132,12 +132,12 @@ Functions are private by default and emitted as `static` in C. Use `pub` to expo
 
 | Module | Function | Description |
 |---|---|---|
-| `std.io` | `io.print(str)` | Write a string to stdout (no newline added) |
+| `std.io` | `io.print(value)` | Write a value to stdout (no newline added). Accepts `str`, every integer type, `f32`, `f64`, `bool`, and integer literals. |
 | `std.os` | `os.exit(code)` | Exit with the given code |
 
 ## Diagnostics
 
-The type checker performs 24 checks, and every error includes a line and column. These cover undeclared names, unknown types and modules, argument count and type mismatches, invalid assignments and returns, missing fields, duplicate definitions, and writes to `const` values.
+The type checker performs 26 checks, and every error includes a line and column. These cover undeclared names, unknown types and modules, argument count and type mismatches, invalid assignments and returns, missing fields, duplicate definitions, values that cannot be printed, and writes to `const` values.
 
 The lexer additionally warns when a string contains `/n`, which is usually a mistyped `\n`.
 
@@ -151,7 +151,7 @@ Not yet supported:
 - Methods on structs (use free functions)
 - `foreach`-style loops
 - Multi-file projects
-- String building and number printing in `io.print`
+- String building in `io.print` (it writes one value and adds no newline)
 - Modules beyond `std.io` and `std.os`
 
 Known issues:
@@ -162,7 +162,13 @@ Known issues:
 
 ## Project Status
 
-CBang is under active development. The built-in self test (`cbang --test`) passes, and all programs in `examples/` build and run. Last verified 2026-10-24.
+CBang is under active development. The built-in self test (`cbang --test`) passes, all programs in `examples/` build and run, and the test suite in `tests/` passes 15 of 15:
+
+```sh
+sh tests/run.sh
+```
+
+Nine programs must compile and exit 0, six must be rejected by the compiler, `defer` is checked against expected output, and every generated C file is additionally compiled with `-Wall -Wextra` — a C warning counts as a failure. Last verified 2026-10-26.
 
 ## License
 
