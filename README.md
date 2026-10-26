@@ -71,7 +71,7 @@ pub fn main() i32 {
 file.cb -> lexer -> parser -> sema -> file.c -> cc -> binary
 ```
 
-CBang translates source to C and invokes the system C compiler to produce the final binary.
+CBang translates source to C and invokes the system C compiler to produce the final binary. When `std.math` is used, `-lm` is passed to the linker so the libm functions resolve.
 
 ## Command Line
 
@@ -134,10 +134,27 @@ Functions are private by default and emitted as `static` in C. Use `pub` to expo
 |---|---|---|
 | `std.io` | `io.print(value)` | Write a value to stdout (no newline added). Accepts `str`, every integer type, `f32`, `f64`, `bool`, and integer literals. |
 | `std.os` | `os.exit(code)` | Exit with the given code |
+| `std.math` | `math.abs` `math.min` `math.max` `math.sqrt` `math.pow` `math.floor` `math.ceil` `math.round` | Numeric functions. `abs` keeps the argument's type; `min`/`max` work on signed, unsigned and floating-point values; the rest return `f64`. |
+
+```c
+use std.math;
+
+pub fn main() i32 {
+    var root: f64 = math.sqrt(144.0);      // 12
+    var bigger: i32 = math.max(3, 7);      // 7
+    var rounded: f64 = math.floor(2.7);    // 2
+    if (root == 12.0 && bigger == 7 && rounded == 2.0) {
+        return 0;
+    }
+    return 1;
+}
+```
+
+Each argument is evaluated exactly once, so `math.min(bump(), 5)` calls `bump()` one time. Anything that reaches libm is linked with `-lm` automatically.
 
 ## Diagnostics
 
-The type checker performs 26 checks, and every error includes a line and column. These cover undeclared names, unknown types and modules, argument count and type mismatches, invalid assignments and returns, missing fields, duplicate definitions, values that cannot be printed, and writes to `const` values.
+The type checker performs 39 checks, and every error includes a line and column. These cover undeclared names, unknown types and modules, argument count and type mismatches, invalid assignments and returns, missing fields, duplicate definitions, values that cannot be printed, writes to `const` values, and the argument rules of `std.math` — including mixing signed with unsigned in `math.min`.
 
 The lexer additionally warns when a string contains `/n`, which is usually a mistyped `\n`.
 
@@ -152,7 +169,8 @@ Not yet supported:
 - `foreach`-style loops
 - Multi-file projects
 - String building in `io.print` (it writes one value and adds no newline)
-- Modules beyond `std.io` and `std.os`
+- Modules beyond `std.io`, `std.os` and `std.math`
+- `sin`, `cos`, `log` and the other transcendental functions in `std.math`
 
 Known issues:
 
@@ -162,13 +180,13 @@ Known issues:
 
 ## Project Status
 
-CBang is under active development. The built-in self test (`cbang --test`) passes, all programs in `examples/` build and run, and the test suite in `tests/` passes 15 of 15:
+CBang is under active development. The built-in self test (`cbang --test`) passes, all programs in `examples/` build and run, and the test suite in `tests/` passes 18 of 18:
 
 ```sh
 sh tests/run.sh
 ```
 
-Nine programs must compile and exit 0, six must be rejected by the compiler, `defer` is checked against expected output, and every generated C file is additionally compiled with `-Wall -Wextra` — a C warning counts as a failure. Last verified 2026-10-26.
+Eleven programs must compile and exit 0, seven must be rejected by the compiler, `defer` is checked against expected output, and every generated C file is additionally compiled with `-Wall -Wextra` — a C warning counts as a failure. Last verified 2026-10-26.
 
 ## License
 

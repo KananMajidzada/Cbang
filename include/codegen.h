@@ -21,4 +21,13 @@
 /* Emit full C program. Returns false on failure. */
 bool codegen_emit_c(ASTNodeList *program, const char *out_path);
 
+/*
+ * True if the C just emitted calls something from libm (sqrt, pow, floor,
+ * ceil, round, fabs). Most Unix linkers keep libm in a separate library, so
+ * the driver must append -lm or the link fails with
+ * `undefined reference to `sqrt''. The generator is the only thing that
+ * knows which math helpers were actually written, so it reports this.
+ */
+int codegen_used_libm(void);
+
 #endif

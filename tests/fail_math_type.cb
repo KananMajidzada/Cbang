@@ -1,0 +1,12 @@
+// std.math must reject wrong names, arities and types.
+use std.math;
+
+pub fn main() i32 {
+    var a: i32 = 1;
+    var b: u64 = 2;
+    math.sin(1.0);          // no such function
+    math.sqrt(1.0, 2.0);    // wrong arity
+    math.abs("x");          // not a number
+    math.min(a, b);         // signed mixed with unsigned
+    return 0;
+}

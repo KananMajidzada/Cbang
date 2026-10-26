@@ -25,6 +25,27 @@ typedef struct ASTNodeList ASTNodeList;
 #define PRINT_FLOAT  4   /* printf %g */
 #define PRINT_BOOL   5   /* fputs "true"/"false" */
 
+/*
+ * std.math dispatch kinds. Same reason as PRINT_*: codegen cannot see types,
+ * and min/max must not evaluate their arguments twice (a ternary would),
+ * so sema picks the exact C helper and leaves it a note.
+ */
+#define MATH_NONE      0
+#define MATH_ABS_INT   1   /* llabs  */
+#define MATH_ABS_UINT  2   /* identity: abs of unsigned is itself */
+#define MATH_ABS_FLT   3   /* fabs   */
+#define MATH_SQRT      4
+#define MATH_POW       5
+#define MATH_FLOOR     6
+#define MATH_CEIL      7
+#define MATH_ROUND     8
+#define MATH_MIN_INT   9   /* cb_min_i64 */
+#define MATH_MAX_INT  10   /* cb_max_i64 */
+#define MATH_MIN_UINT 11   /* cb_min_u64 */
+#define MATH_MAX_UINT 12   /* cb_max_u64 */
+#define MATH_MIN_FLT  13   /* cb_min_f64 */
+#define MATH_MAX_FLT  14   /* cb_max_f64 */
+
 /* ========================================================================== */
 /* AST Node Types                                                             */
 /* ========================================================================== */
@@ -225,6 +246,7 @@ struct ASTNode {
             ASTNode *callee;
             ASTNodeList *args;
             int print_kind;     /* PRINT_* : set by sema for io.print only */
+            int math_kind;      /* MATH_* : set by sema for math.* only */
         } call;
 
         /* INDEX */

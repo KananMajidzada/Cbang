@@ -18,9 +18,14 @@ static char *read_file(const char *path, size_t *out_len) {
     buf[len] = '\0';
     fclose(f);
     *out_len = len;
+
     return buf;
 }
 
+/* math.* lowers to sqrt/pow/floor/... which live in libm. On Linux and most
+   Unix linkers libm is a separate library, so without -lm the link fails with
+   `undefined reference to `sqrt''. The generator knows what it emitted, so it
+   reports it through codegen_used_libm() rather than main guessing. */
 /* Modes:
    cbang file.cb          -> parse & print AST
    cbang file.cb --tokens -> lexer only, print tokens
@@ -84,14 +89,17 @@ int main(int argc, char **argv) {
 
         /* Compile: cc file.c -o out */
         char cmd[1024];
+        const char *lm = codegen_used_libm() ? " -lm" : "";
         if (out_name)
-            snprintf(cmd, sizeof(cmd), "cc -std=c11 -Wall -O2 -o %s %s", out_name, c_path);
+            snprintf(cmd, sizeof(cmd), "cc -std=c11 -Wall -O2 -o %s %s%s",
+                     out_name, c_path, lm);
         else {
             char exe[512];
             snprintf(exe, sizeof(exe), "%s", in_path);
             dot = strrchr(exe, '.');
             if (dot) *dot = '\0';
-            snprintf(cmd, sizeof(cmd), "cc -std=c11 -Wall -O2 -o %s %s", exe, c_path);
+            snprintf(cmd, sizeof(cmd), "cc -std=c11 -Wall -O2 -o %s %s%s",
+                     exe, c_path, lm);
         }
         printf("$ %s\n", cmd);
         int rc = system(cmd);

@@ -203,7 +203,7 @@ Compound assignment:
 ==============
 
 Function calls:        add(1, 2)
-Module calls:          io.print("x"), os.exit(1)
+Module calls:          io.print("x"), os.exit(1), math.sqrt(2.0)
 Casts:                 x as i64
 sizeof:                sizeof(i32)
 alignof:               alignof(f64)
@@ -228,10 +228,39 @@ std.io:
 std.os:
     os.exit(code)        -> exits with that code
 
+std.math:
+    math.abs(x)          -> absolute value
+    math.min(a, b)       -> smaller of the two
+    math.max(a, b)       -> larger of the two
+    math.sqrt(x)         -> square root
+    math.pow(x, y)       -> x to the power y
+    math.floor(x)        -> round toward -inf
+    math.ceil(x)         -> round toward +inf
+    math.round(x)        -> round to nearest
+
+    Types:
+      abs keeps the argument's type: int in, same int out; f64 in, f64 out.
+            On unsigned values it is the value itself (already >= 0).
+      min/max pick the helper from the arguments: both signed -> i64 helper,
+            both unsigned -> u64 helper, either float -> double helper.
+            An int literal takes the other side's signedness, so
+            math.max(count, 0) works without a cast.
+            Signed mixed with unsigned, or a float mixed with a plain int
+            variable, is a type error rather than a silent conversion.
+      sqrt, pow, floor, ceil, round always return f64.
+            Arguments may be any number; C promotes them.
+
+    Each argument is evaluated exactly once: math.min(bump(), 5) calls
+    bump() one time. A (a<b?a:b) expression would have called it twice.
+
+    sqrt/pow/floor/ceil/round/abs-on-float lower to libm, so the driver
+    adds -lm to the cc command. Only when the program actually uses them:
+    `use std.math` alone adds nothing, and neither does math.min.
+
 Unknown modules produce an error listing what exists.
 
 
-9. TYPE CHECKER (sema) - 26 CHECKS
+9. TYPE CHECKER (sema) - 39 CHECKS
 ==================================
 
 All of these were tested and produce an error with line:column:
@@ -239,9 +268,22 @@ All of these were tested and produce an error with line:column:
     undeclared variable 'x'
     unknown function 'foo'
     unknown type 'Pointt'
-    unknown module 'std.foo' (available: std.io, std.os)
+    unknown module 'std.foo' (available: std.io, std.os, std.math)
     unknown io function 'foo'
     unknown os function 'foo'
+    unknown math function 'sin'
+    math.abs() takes exactly 1 argument
+    math.abs() expects a number, got 'STR'
+    math.floor() takes exactly 1 argument
+    math.floor() expects a number, got 'STR'
+    math.sqrt() takes exactly 1 argument
+    math.sqrt() expects a number, got 'STR'
+    math.pow() takes exactly 2 arguments
+    math.pow() expects a number, got 'STR'
+    math.min() takes exactly 2 arguments
+    math.min() expects two numbers, got 'I32' and 'STR'
+    math.max() cannot mix 'I32' and 'F64'
+    math.min() cannot mix signed and unsigned ('I32' vs 'U64')
     'add' expects 2 argument(s), got 3
     argument 1: expected 'I32', got 'STR'
     cannot assign 'STR' to 'I32'
@@ -346,6 +388,8 @@ Other details:
       instead of being caught by sema
     - no source snippet in error messages (no caret ^^^ line yet)
     - floats print with C's %g, so 3.0 prints as "3"
+    - std.math has abs, min, max, sqrt, pow, floor, ceil, round.
+      No sin, cos, log, exp, atan2 or integer division helpers yet.
 
 
 15. TESTS
@@ -353,7 +397,7 @@ Other details:
 
     sh tests/run.sh        runs everything
 
-    9 programs that must build and exit 0:
+    11 programs that must build and exit 0:
         pass_print     every printable type, u64 max
         pass_defer     LIFO order checked against expected output
         pass_point     pointer auto-deref (spec 3.3)
@@ -363,15 +407,17 @@ Other details:
         pass_extern     extern fn linking against libc
         pass_alias      type X = Y resolution
         pass_str        str indexing, .len, .ptr
+        pass_math       every std.math function, args evaluated once
+        pass_math_use_only   `use std.math` with no call emits nothing
 
-    6 programs the compiler must reject:
-        fail_type_errors, fail_const, fail_print_type,
+    7 programs the compiler must reject:
+        fail_type_errors, fail_const, fail_print_type, fail_math_type,
         fail_default_case, fail_array, fail_undeclared_module
 
     Every pass test's generated C is additionally compiled with
     -Wall -Wextra, so a C warning counts as a test failure.
 
-    Current result: 15 passed, 0 failed
+    Current result: 18 passed, 0 failed
 
     cbang --test                  built-in self test, RESULT: PASS
     examples/hello.cb             works
@@ -379,8 +425,8 @@ Other details:
     examples/simple.cb            works
 
 Statistics:
-    ~3,900 lines of compiler C
+    ~4,100 lines of compiler C
     40 keywords
     14 primitive types
-    26 type-checker diagnostics
-    2 std modules
+    39 type-checker diagnostics
+    3 std modules

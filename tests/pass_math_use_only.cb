@@ -1,0 +1,8 @@
+// `use std.math` with no math call must not emit dead helpers or drag in
+// -lm: an unused static helper is a -Wunused-function warning, which the
+// runner counts as a failure.
+use std.math;
+
+pub fn main() i32 {
+    return 0;
+}

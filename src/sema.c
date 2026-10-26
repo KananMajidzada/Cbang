@@ -222,6 +222,154 @@ static void sema_stmt(ASTNode *n);
 static void sema_block(ASTNode *n);
 
 /* ========================================================================== */
+/* std.math                                                                   */
+/* ========================================================================== */
+
+/*
+ * Type-check a math.* call and write the MATH_* note codegen needs.
+ *
+ * codegen sees only the tree, not the types, and it cannot expand
+ * `math.min(a,b)` into `(a<b?a:b)` on its own because that would evaluate
+ * its arguments twice -- math.min(i++, 5) would bump i twice. So sema picks
+ * the exact C helper here and codegen just emits the call.
+ *
+ * Returns the call's result type.
+ */
+static Type *sema_math(ASTNode *n, Token *fn) {
+    ASTNodeList *args = n->data.call.args;
+    size_t nargs = args->count;
+    char msg[256];
+    Type *a = NULL, *b = NULL;
+
+    n->data.call.math_kind = MATH_NONE;
+
+    if (fn->length == 3 && memcmp(fn->start, "abs", 3) == 0) {
+        if (nargs != 1) { err(&n->token, "math.abs() takes exactly 1 argument"); return type_primitive(KW_I32); }
+        a = sema_expr(args->items[0]);
+        if (!a) return type_primitive(KW_I32);
+        if (is_int_lit(a)) { n->data.call.math_kind = MATH_ABS_INT; return type_primitive(KW_I32); }
+        if (type_is_int(a)) {
+            /* unsigned: every value is >= 0, so abs is a no-op */
+            n->data.call.math_kind = type_is_unsigned(a) ? MATH_ABS_UINT : MATH_ABS_INT;
+            return a;
+        }
+        if (type_is_float(a)) { n->data.call.math_kind = MATH_ABS_FLT; return a; }
+        snprintf(msg, sizeof(msg), "math.abs() expects a number, got '%s'", type_name(a));
+        err(&n->token, msg);
+        return type_primitive(KW_I32);
+    }
+
+    if ((fn->length == 5 && memcmp(fn->start, "floor", 5) == 0) ||
+        (fn->length == 4 && memcmp(fn->start, "ceil", 4) == 0) ||
+        (fn->length == 5 && memcmp(fn->start, "round", 5) == 0)) {
+        if (nargs != 1) {
+            snprintf(msg, sizeof(msg), "math.%.*s() takes exactly 1 argument",
+                     (int)fn->length, fn->start);
+            err(&n->token, msg);
+            return type_primitive(KW_F64);
+        }
+        a = sema_expr(args->items[0]);
+        if (a && !type_is_float(a) && !type_is_int(a) && !is_int_lit(a)) {
+            snprintf(msg, sizeof(msg), "math.%.*s() expects a number, got '%s'",
+                     (int)fn->length, fn->start, type_name(a));
+            err(&n->token, msg);
+        }
+        if (fn->start[0] == 'f')      n->data.call.math_kind = MATH_FLOOR;
+        else if (fn->start[0] == 'c') n->data.call.math_kind = MATH_CEIL;
+        else                          n->data.call.math_kind = MATH_ROUND;
+        return type_primitive(KW_F64);
+    }
+
+    if (fn->length == 4 && memcmp(fn->start, "sqrt", 4) == 0) {
+        if (nargs != 1) { err(&n->token, "math.sqrt() takes exactly 1 argument"); return type_primitive(KW_F64); }
+        a = sema_expr(args->items[0]);
+        if (a && !type_is_float(a) && !type_is_int(a) && !is_int_lit(a)) {
+            snprintf(msg, sizeof(msg), "math.sqrt() expects a number, got '%s'", type_name(a));
+            err(&n->token, msg);
+        }
+        n->data.call.math_kind = MATH_SQRT;
+        return type_primitive(KW_F64);
+    }
+
+    if (fn->length == 3 && memcmp(fn->start, "pow", 3) == 0) {
+        if (nargs != 2) { err(&n->token, "math.pow() takes exactly 2 arguments"); return type_primitive(KW_F64); }
+        a = sema_expr(args->items[0]);
+        b = sema_expr(args->items[1]);
+        if (a && (!type_is_float(a) && !type_is_int(a) && !is_int_lit(a))) {
+            snprintf(msg, sizeof(msg), "math.pow() expects a number, got '%s'", type_name(a));
+            err(&n->token, msg);
+        }
+        if (b && (!type_is_float(b) && !type_is_int(b) && !is_int_lit(b))) {
+            snprintf(msg, sizeof(msg), "math.pow() expects a number, got '%s'", type_name(b));
+            err(&n->token, msg);
+        }
+        n->data.call.math_kind = MATH_POW;
+        return type_primitive(KW_F64);
+    }
+
+    if ((fn->length == 3 && memcmp(fn->start, "min", 3) == 0) ||
+        (fn->length == 3 && memcmp(fn->start, "max", 3) == 0)) {
+        bool is_min = fn->start[0] == 'm' && fn->start[1] == 'i';
+        if (nargs != 2) {
+            snprintf(msg, sizeof(msg), "math.%.*s() takes exactly 2 arguments",
+                     (int)fn->length, fn->start);
+            err(&n->token, msg);
+            return type_primitive(KW_I32);
+        }
+        a = sema_expr(args->items[0]);
+        b = sema_expr(args->items[1]);
+        if (!a || !b) return type_primitive(KW_I32);
+
+        bool a_num = type_is_int(a) || is_int_lit(a) || type_is_float(a);
+        bool b_num = type_is_int(b) || is_int_lit(b) || type_is_float(b);
+        if (!a_num || !b_num) {
+            snprintf(msg, sizeof(msg), "math.%.*s() expects two numbers, got '%s' and '%s'",
+                     (int)fn->length, fn->start, type_name(a), type_name(b));
+            err(&n->token, msg);
+            return type_primitive(KW_I32);
+        }
+
+        if (type_is_float(a) || type_is_float(b)) {
+            /* A float side wins and the other side is promoted. Only a float
+               or an int literal may sit next to it: mixing a u64 variable
+               with a f64 silently loses the top half of the value, so that
+               gets caught instead. */
+            if ((!type_is_float(a) && !is_int_lit(a)) ||
+                (!type_is_float(b) && !is_int_lit(b))) {
+                snprintf(msg, sizeof(msg), "math.%.*s() cannot mix '%s' and '%s'",
+                         (int)fn->length, fn->start, type_name(a), type_name(b));
+                err(&n->token, msg);
+            }
+            n->data.call.math_kind = is_min ? MATH_MIN_FLT : MATH_MAX_FLT;
+            return type_is_float(a) ? a : b;
+        }
+
+        /* Two integers. An int literal has no signedness of its own, so it
+           takes the signedness of the other side -- that is what lets
+           math.max(count, 0) work without a cast. */
+        bool a_u = type_is_unsigned(a), b_u = type_is_unsigned(b);
+        if (type_is_int(a) && type_is_int(b) && a_u != b_u) {
+            snprintf(msg, sizeof(msg), "math.%.*s() cannot mix signed and unsigned ('%s' vs '%s')",
+                     (int)fn->length, fn->start, type_name(a), type_name(b));
+            err(&n->token, msg);
+            return type_primitive(KW_I32);
+        }
+        if (a_u || b_u) {
+            n->data.call.math_kind = is_min ? MATH_MIN_UINT : MATH_MAX_UINT;
+        } else {
+            n->data.call.math_kind = is_min ? MATH_MIN_INT : MATH_MAX_INT;
+        }
+        return type_is_int(a) ? a : (type_is_int(b) ? b : type_primitive(KW_I32));
+    }
+
+    snprintf(msg, sizeof(msg), "unknown math function '%.*s'",
+             (int)fn->length, fn->start);
+    err(fn, msg);
+    for (size_t i = 0; i < nargs; i++) sema_expr(args->items[i]);
+    return type_primitive(KW_F64);
+}
+
+/* ========================================================================== */
 /* Expression Checking  - returns the type of the expression                  */
 /* ========================================================================== */
 
@@ -370,6 +518,9 @@ static Type *sema_expr(ASTNode *n) {
                                  (int)fn->length, fn->start);
                         err(fn, msg);
                         return type_primitive(KW_VOID);
+                    }
+                    if (mod->length == 4 && memcmp(mod->start, "math", 4) == 0) {
+                        return sema_math(n, fn);
                     }
                     char msg[256];
                     snprintf(msg, sizeof(msg),
@@ -737,17 +888,18 @@ int sema_check(ASTNodeList *program) {
 
     collect_top_level(program);
 
-    /* Check use declarations: only std.io and std.os exist so far */
+    /* Check use declarations: only std.io, std.os and std.math exist so far */
     for (size_t i = 0; i < program->count; i++) {
         ASTNode *n = program->items[i];
         if (n->type != AST_USE_DECL) continue;
         Token *p = &n->data.use_decl.path;
         bool known =
             (p->length == 6 && memcmp(p->start, "std.io", 6) == 0) ||
-            (p->length == 6 && memcmp(p->start, "std.os", 6) == 0);
+            (p->length == 6 && memcmp(p->start, "std.os", 6) == 0) ||
+            (p->length == 8 && memcmp(p->start, "std.math", 8) == 0);
         if (!known) {
             char msg[256];
-            snprintf(msg, sizeof(msg), "unknown module '%.*s' (available: std.io, std.os)",
+            snprintf(msg, sizeof(msg), "unknown module '%.*s' (available: std.io, std.os, std.math)",
                      (int)p->length, p->start);
             err(p, msg);
         }
