@@ -1,0 +1,7 @@
+// Control must not fall off the end of a non-void function: in C that
+// returns whatever happened to be in the register.
+fn f(a: i32) i32 {
+    if (a > 0) { return 1; }
+}
+pub fn main() i32 { return f(1); }
+// expect: control reaches the end of 'f' without returning a value

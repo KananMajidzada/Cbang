@@ -1,3 +1,4 @@
 // Only std.io and std.os exist.
 use std.net;
 pub fn main() i32 { return 0; }
+// expect: unknown module 'std.net'

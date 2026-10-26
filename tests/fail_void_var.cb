@@ -1,0 +1,6 @@
+// `void` cannot be stored -- this used to be a C error about generated code.
+pub fn main() i32 {
+    var v: void;
+    return 0;
+}
+// expect: variable 'v' cannot have type 'void'

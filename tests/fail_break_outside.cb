@@ -1,0 +1,7 @@
+// break/continue outside a loop used to be caught by the C compiler,
+// which complained about a file the user never wrote.
+pub fn main() i32 {
+    break;
+    return 0;
+}
+// expect: 'break' outside a loop or switch

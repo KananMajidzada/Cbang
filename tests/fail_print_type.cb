@@ -6,3 +6,4 @@ pub fn main() i32 {
     io.print(p);
     return 0;
 }
+// expect: io.print() cannot print type 'P'

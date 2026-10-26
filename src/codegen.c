@@ -29,6 +29,23 @@ typedef struct {
     bool need_minmax;   /* our own cb_min/cb_max helpers, evaluated once */
 
     /*
+     * Unreachable `return (T){0};` for a function body whose control only
+     * leaves through a loop or os.exit(). Set by emit_fn_decl, consumed by
+     * the block emitter just before it closes the body's brace -- the tail
+     * has to be written before that brace, not after it.
+     */
+    Type *tail_type;
+    int tail_depth;
+
+    /* Every name the program mentions, collected by scan_node. Used to find
+       a private function nothing calls: gcc would report that as
+       -Wunused-function against the generated file, so we report it here,
+       against the user's own line. */
+    const char *use_name[256];
+    size_t use_len[256];
+    size_t nuses;
+
+    /*
      * Defer lowering machinery.
      * Before emitting a block, we pre-scan its direct children for defer
      * statements and push their bodies onto this stack (registration order).
@@ -352,6 +369,18 @@ static void emit_stmt(Gen *g, ASTNode *n) {
             }
             g->defer_sp = defer_mark;
 
+            /* Close a function body that sema proved never falls off its end
+               (it ends in while(true) or os.exit()) with a return gcc can
+               see, so it does not warn about the generated file. */
+            if (g->tail_type && g->indent == g->tail_depth) {
+                Type *tt = g->tail_type;
+                g->tail_type = NULL;
+                pad(g);
+                fputs("return (", g->out);
+                emit_type(g, tt);
+                fputs("){0};\n", g->out);
+            }
+
             g->indent--;
             pad(g); fputs("}\n", g->out);
             break;
@@ -462,8 +491,14 @@ static void emit_stmt(Gen *g, ASTNode *n) {
 /* Declarations                                                               */
 /* ========================================================================== */
 
-/* A function gets C's `static` (file-local) unless it's pub — except `main`,
-   which must stay extern or the linker won't find the entry point. */
+/*
+ * A function gets C's `static inline` (file-local) unless it's pub --
+ * except `main`, which must stay extern or the linker won't find the entry
+ * point. `inline` rather than bare `static` because an unused static
+ * function is a -Wunused-function warning in the user's build; an unused
+ * static inline is not. Private functions we do warn about ourselves, from
+ * sema-adjacent code in the pre-scan, against the user's own line.
+ */
 static bool fn_is_static(ASTNode *n) {
     /* extern functions are defined in another translation unit or library —
        making them static would make them unresolvable at link time. */
@@ -474,9 +509,31 @@ static bool fn_is_static(ASTNode *n) {
     return true;
 }
 
+/*
+ * Does this body need a trailing `return` that will never run?
+ *
+ * sema only lets a non-void function through if every path returns or the
+ * body ends in a loop that never comes back (`while (true)`) or in
+ * os.exit(). gcc still reports "no return statement in function returning
+ * non-void" for those, pointing at the generated file the user never wrote,
+ * so close the body with a return the C compiler can see. A compound
+ * literal zeroes any type, scalar or struct, in standard C.
+ */
+static bool needs_tail_return(ASTNode *body) {
+    if (!body) return false;
+    if (body->type != AST_BLOCK) return body->type != AST_RETURN_STMT;
+    ASTNodeList *stmts = body->data.block.stmts;
+    if (stmts->count == 0) return true;
+    return stmts->items[stmts->count - 1]->type != AST_RETURN_STMT;
+}
+
+static bool type_is_void_c(Type *t) {
+    return !t || (t->kind == TYPE_PRIMITIVE && t->data.primitive == KW_VOID);
+}
+
 static void emit_fn_decl(Gen *g, ASTNode *n) {
     /* Prototype: [static] ret name(params); */
-    if (fn_is_static(n)) fputs("static ", g->out);
+    if (fn_is_static(n)) fputs("static inline ", g->out);
     emit_type(g, n->data.fn_decl.ret_type);
     fprintf(g->out, " %.*s(",
             (int)n->data.fn_decl.name.length,
@@ -496,7 +553,7 @@ static void emit_fn_decl(Gen *g, ASTNode *n) {
     /* Definition (skip extern) */
     if (n->data.fn_decl.is_extern || !n->data.fn_decl.body) return;
 
-    if (fn_is_static(n)) fputs("static ", g->out);
+    if (fn_is_static(n)) fputs("static inline ", g->out);
     emit_type(g, n->data.fn_decl.ret_type);
     fprintf(g->out, " %.*s(",
             (int)n->data.fn_decl.name.length,
@@ -512,7 +569,13 @@ static void emit_fn_decl(Gen *g, ASTNode *n) {
     fputs(")\n", g->out);
 
     g->in_function = true;
+    if (!type_is_void_c(n->data.fn_decl.ret_type) &&
+        needs_tail_return(n->data.fn_decl.body)) {
+        g->tail_type = n->data.fn_decl.ret_type;
+        g->tail_depth = g->indent + 1;   /* the body block, not nested ones */
+    }
     emit_stmt(g, n->data.fn_decl.body);
+    g->tail_type = NULL;
     g->in_function = false;
 }
 
@@ -523,7 +586,8 @@ static void emit_top_level(Gen *g, ASTNode *n) {
             fputc('\n', g->out);
             break;
         case AST_STRUCT_DECL: {
-            fprintf(g->out, "typedef struct %.*s {\n",
+            /* the `typedef struct X X;` went out above: this is just the body */
+            fprintf(g->out, "struct %.*s {\n",
                     (int)n->data.aggregate_decl.name.length,
                     n->data.aggregate_decl.name.start);
             for (size_t i = 0; i < n->data.aggregate_decl.fields->count; i++) {
@@ -534,13 +598,11 @@ static void emit_top_level(Gen *g, ASTNode *n) {
                         (int)f->data.var_decl.name.length,
                         f->data.var_decl.name.start);
             }
-            fprintf(g->out, "} %.*s;\n\n",
-                    (int)n->data.aggregate_decl.name.length,
-                    n->data.aggregate_decl.name.start);
+            fputs("};\n\n", g->out);
             break;
         }
         case AST_UNION_DECL: {
-            fprintf(g->out, "typedef union %.*s {\n",
+            fprintf(g->out, "union %.*s {\n",
                     (int)n->data.aggregate_decl.name.length,
                     n->data.aggregate_decl.name.start);
             for (size_t i = 0; i < n->data.aggregate_decl.fields->count; i++) {
@@ -551,9 +613,7 @@ static void emit_top_level(Gen *g, ASTNode *n) {
                         (int)f->data.var_decl.name.length,
                         f->data.var_decl.name.start);
             }
-            fprintf(g->out, "} %.*s;\n\n",
-                    (int)n->data.aggregate_decl.name.length,
-                    n->data.aggregate_decl.name.start);
+            fputs("};\n\n", g->out);
             break;
         }
         case AST_ENUM_DECL: {
@@ -647,10 +707,25 @@ static void note_print(Gen *g, int kind) {
     }
 }
 
+/* A name the program mentions -- a call, `&f`, anything. */
+static void note_use(Gen *g, Token *name) {
+    if (g->nuses >= sizeof(g->use_name) / sizeof(g->use_name[0])) return;
+    g->use_name[g->nuses] = name->start;
+    g->use_len[g->nuses] = name->length;
+    g->nuses++;
+}
+
+static bool name_used(Gen *g, Token *name) {
+    for (size_t i = 0; i < g->nuses; i++)
+        if (g->use_len[i] == name->length &&
+            memcmp(g->use_name[i], name->start, name->length) == 0)
+            return true;
+    return false;
+}
+
 /* Which std.math pieces the program touches: headers and helpers are
    emitted above the bodies, so this has to be known first. */
-static void note_math(Gen *g, int kind) {
-    if (kind <= MATH_NONE || kind > MATH_MAX_FLT) return;
+static void note_math(Gen *g, int kind) {    if (kind <= MATH_NONE || kind > MATH_MAX_FLT) return;
     if (kind >= MATH_MIN_INT) {          /* the 6 min/max helpers */
         g->need_minmax = true;
         return;
@@ -681,6 +756,16 @@ static void scan_node(Gen *g, ASTNode *n) {
                           scan_node(g, n->data.binary.right); break;
         case AST_CALL:    note_print(g, n->data.call.print_kind);
                           note_math(g, n->data.call.math_kind);
+                          /* os.exit needs <stdlib.h>, but Pass 1 only looked
+                             at `use` declarations and the header is written
+                             before bodies are walked -- note it here. */
+                          if (n->data.call.callee->type == AST_FIELD) {
+                              ASTNode *b = n->data.call.callee->data.field.base;
+                              if (b->type == AST_VAR_REF &&
+                                  b->data.var_ref.name.length == 2 &&
+                                  memcmp(b->data.var_ref.name.start, "os", 2) == 0)
+                                  g->needs_os = true;
+                          }
                           scan_node(g, n->data.call.callee);
                           scan_list(g, n->data.call.args); break;
         case AST_INDEX:   scan_node(g, n->data.index.base);
@@ -713,7 +798,8 @@ static void scan_node(Gen *g, ASTNode *n) {
         case AST_RETURN_STMT: scan_node(g, n->data.return_stmt.value); break;
         case AST_DEFER_STMT: scan_node(g, n->data.defer_stmt.body); break;
         case AST_EXPR_STMT: scan_node(g, n->data.expr_stmt.expr); break;
-        /* leaves: literals, var refs, and the type-only nodes */
+        case AST_VAR_REF:   note_use(g, &n->data.var_ref.name); break;
+        /* leaves: literals and the type-only nodes */
         default: break;
     }
 }
@@ -741,6 +827,22 @@ bool codegen_emit_c(ASTNodeList *program, const char *out_path) {
     for (size_t i = 0; i < program->count; i++)
         scan_node(&g, program->items[i]);
     g_used_libm = g.needs_math;     /* tell the driver to link -lm */
+
+    /*
+     * A private function nothing calls becomes `static` C code that gcc
+     * reports as -Wunused-function -- pointing at a file the user never
+     * wrote. Say it here instead, against their own line.
+     */
+    for (size_t i = 0; i < program->count; i++) {
+        ASTNode *n = program->items[i];
+        if (n->type != AST_FN_DECL || !n->data.fn_decl.body) continue;
+        if (n->data.fn_decl.is_extern || n->data.fn_decl.is_pub) continue;
+        Token *nm = &n->data.fn_decl.name;
+        if (nm->length == 4 && memcmp(nm->start, "main", 4) == 0) continue;
+        if (!name_used(&g, nm))
+            fprintf(stderr, "[warning] %zu:%zu: private function '%.*s' is never used\n",
+                    nm->line, nm->column, (int)nm->length, nm->start);
+    }
 
     fputs("/* Generated by cbang - C! (C-Bang) compiler */\n", out);
     fputs("#include <stdint.h>\n#include <stdbool.h>\n#include <stddef.h>\n", out);
@@ -792,6 +894,31 @@ bool codegen_emit_c(ASTNodeList *program, const char *out_path) {
               "static inline double cb_max_f64(double a, double b) { return a > b ? a : b; }\n\n", out);
     }
 
+    /*
+     * Forward typedefs before any body.
+     *
+     * In C a typedef name only comes into scope once its declaration ends,
+     * so `typedef struct Node { Node *next; } Node;` fails -- the Node inside
+     * its own body is not defined yet. Declaring the name first also lets a
+     * struct hold a pointer to a type defined further down the file.
+     */
+    for (size_t i = 0; i < program->count; i++) {
+        ASTNode *n = program->items[i];
+        if (n->type == AST_STRUCT_DECL)
+            fprintf(out, "typedef struct %.*s %.*s;\n",
+                    (int)n->data.aggregate_decl.name.length,
+                    n->data.aggregate_decl.name.start,
+                    (int)n->data.aggregate_decl.name.length,
+                    n->data.aggregate_decl.name.start);
+        else if (n->type == AST_UNION_DECL)
+            fprintf(out, "typedef union %.*s %.*s;\n",
+                    (int)n->data.aggregate_decl.name.length,
+                    n->data.aggregate_decl.name.start,
+                    (int)n->data.aggregate_decl.name.length,
+                    n->data.aggregate_decl.name.start);
+    }
+    fputs("\n", out);
+
     /* Pass 2: type definitions FIRST (structs/enums/aliases/globals),
        so function prototypes can reference them */
     for (size_t i = 0; i < program->count; i++) {
@@ -809,7 +936,7 @@ bool codegen_emit_c(ASTNodeList *program, const char *out_path) {
     for (size_t i = 0; i < program->count; i++) {
         ASTNode *n = program->items[i];
         if (n->type == AST_FN_DECL) {
-            if (fn_is_static(n)) fputs("static ", out);
+            if (fn_is_static(n)) fputs("static inline ", out);
             emit_type(&g, n->data.fn_decl.ret_type);
             fprintf(out, " %.*s(",
                     (int)n->data.fn_decl.name.length,

@@ -1,0 +1,3 @@
+struct S { i32 x; i32 x; }
+pub fn main() i32 { return 0; }
+// expect: duplicate field 'x'

@@ -1,0 +1,8 @@
+// Only variables, fields, derefs and indexes can be assigned to.
+fn f() i32 { return 1; }
+pub fn main() i32 {
+    5 = 6;
+    f() = 7;
+    return 0;
+}
+// expect: invalid assignment target

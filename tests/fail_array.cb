@@ -3,3 +3,4 @@ pub fn main() i32 {
     var a: [5]i32;
     return 0;
 }
+// expect: expected type

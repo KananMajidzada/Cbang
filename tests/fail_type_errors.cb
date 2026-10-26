@@ -12,3 +12,5 @@ pub fn main() i32 {
     z = 5;
     return "not an int";
 }
+// expect: cannot initialize 'I32' with 'STR'
+// expect: undeclared variable 'undefined_var'

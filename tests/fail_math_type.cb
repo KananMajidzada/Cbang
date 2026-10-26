@@ -10,3 +10,4 @@ pub fn main() i32 {
     math.min(a, b);         // signed mixed with unsigned
     return 0;
 }
+// expect: unknown math function 'sin'

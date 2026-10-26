@@ -3,6 +3,8 @@
 #
 #   tests/pass_*.cb     must compile with zero warnings and exit 0
 #   tests/fail_*.cb     must be REJECTED by the compiler
+#   // expect: TEXT     in a fail test: TEXT must appear in the diagnostic,
+#                       so a test cannot pass while the message drifts
 #   tests/expected/X.txt  if present, the program's output must match exactly
 #
 # Every pass test is also checked with -Wall -Wextra on the generated C,
@@ -13,7 +15,7 @@
 set -u
 cd "$(dirname "$0")/.." || exit 1
 
-CB=./build/cbang
+CB=${CB:-./build/cbang}
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
@@ -78,13 +80,29 @@ done
 # --------------------------------------------------------------- fail tests
 for t in tests/fail_*.cb; do
     name=$(basename "$t" .cb)
-    if "$CB" build "$t" -o "$TMP/$name" >/dev/null 2>&1; then
+    out=$("$CB" build "$t" -o "$TMP/$name" 2>&1)
+    rc=$?
+    rm -f "${t%.cb}.c"
+    if [ $rc -eq 0 ]; then
         bad "$name" "compiler accepted a program it must reject"
-        rm -f "${t%.cb}.c"
-    else
-        ok "$name (rejected)"
-        rm -f "${t%.cb}.c"
+        continue
     fi
+
+    # every "// expect: TEXT" line must show up in the diagnostic,
+    # as a whole line of text (not split on spaces)
+    missing=""
+    sed -n 's|^// expect: ||p' "$t" > "$TMP/exp"
+    while IFS= read -r want; do
+        [ -z "$want" ] && continue
+        printf '%s\n' "$out" | grep -qF -- "$want" || missing="$missing [$want]"
+    done < "$TMP/exp"
+    if [ -n "$missing" ]; then
+        bad "$name" "rejected, but expected text missing:$missing"
+        printf '%s\n' "$out" | sed 's/^/        /'
+        continue
+    fi
+
+    ok "$name (rejected)"
 done
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"

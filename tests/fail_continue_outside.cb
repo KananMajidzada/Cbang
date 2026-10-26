@@ -1,0 +1,5 @@
+pub fn main() i32 {
+    continue;
+    return 0;
+}
+// expect: 'continue' outside a loop

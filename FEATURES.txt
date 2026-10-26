@@ -5,7 +5,7 @@ This file lists EVERYTHING the compiler currently has, as verified by
 testing each item. Anything listed as "not implemented" was tested and
 rejected by the compiler.
 
-Last verified: 2026-10-24
+Last verified: 2026-10-26
 
 
 1. KEYWORDS (40)
@@ -260,7 +260,7 @@ std.math:
 Unknown modules produce an error listing what exists.
 
 
-9. TYPE CHECKER (sema) - 39 CHECKS
+9. TYPE CHECKER (sema) - 54 CHECKS
 ==================================
 
 All of these were tested and produce an error with line:column:
@@ -305,6 +305,32 @@ All of these were tested and produce an error with line:column:
     io.print() takes exactly 1 argument
     io.print() cannot print type 'P'
 
+    -- the sweep: mistakes that used to reach the C compiler, which then
+       complained about a file the user never wrote --
+    invalid assignment target
+    division by zero
+    remainder by zero
+    '%' requires integer operands
+    bitwise and shift operators require integer operands
+    shift count 40 is too large for 'I32'
+    'break' outside a loop or switch
+    'continue' outside a loop
+    duplicate parameter 'a'
+    duplicate field 'x'
+    variable 'v' cannot have type 'void'
+    type 'A' cannot contain itself by value (use a pointer: '*A')
+    type 'B' is used before it is declared -- move the definition up, or use a pointer
+    global 'b' is used before it is declared
+    control reaches the end of 'f' without returning a value
+
+The void message reads "<what> cannot have type 'void'", where <what> is
+variable / constant / field / parameter / global / alias.
+
+Declaration order rule: a struct field, alias or global initializer may only
+name a type (or another global) declared above it by value. Through a
+pointer any order is allowed, because codegen emits a forward
+`typedef struct X X;` for every struct and union first.
+
 Type rules:
     - integer literals are untyped until context decides
       (so `var i: u32 = 0;` works)
@@ -334,6 +360,10 @@ Compilation chain:
     [warning] string ends with '/n' - did you mean "\n"?
         (catches forward-slash typo for newline)
 
+    [warning] line:col: private function 'x' is never used
+        (found by the codegen pre-scan, reported against the user's own
+         line instead of gcc's -Wunused-function on generated code)
+
     [lex error] Unterminated string
     [lex error] Unterminated char literal
     [parse error] ... (with line:column and the offending token)
@@ -352,7 +382,7 @@ Compilation chain:
     generics / templates
     method syntax on structs (no obj.method() - use free functions)
     foreach-style loops      only the 3-clause for
-    modules beyond std.io and std.os
+    modules beyond std.io, std.os and std.math
     header inclusion for extern  (you declare symbols, no #include emitted)
 
 
@@ -363,12 +393,24 @@ Emitted C is clean under -Wall -Wextra (zero warnings).
 
 Emission order:
     1. headers, runtime string helpers
-    2. struct/union/enum/typedef/const/globals
-    3. function prototypes (all forward-declared)
-    4. function bodies
+    2. forward `typedef struct X X;` / `typedef union X X;` for every
+       aggregate -- so a struct can hold a pointer to itself (linked
+       lists) or to a type defined further down the file
+    3. struct/union/enum/typedef/const/globals bodies
+    4. function prototypes (all forward-declared)
+    5. function bodies
 
 Other details:
-    - private functions get C's `static`
+    - private functions get C's `static inline`
+      (bare `static` + unused = gcc's -Wunused-function against generated
+       code; `inline` silences that, and C! reports the unused private
+       function itself, against the user's line)
+    - a non-void body that sema proved never falls off its end (it ends in
+      `while (true)` or `os.exit()`) gets an unreachable
+      `return (T){0};` inside its closing brace, so gcc does not warn
+      -Wreturn-type about the generated file
+    - `os.exit()` sets the <stdlib.h> need during the pre-scan, so the
+      header is present even if the program forgot `use std.os`
     - main is never static
     - extern functions are never static
     - defer is lowered to plain C at scope exits and returns
@@ -380,14 +422,18 @@ Other details:
 14. KNOWN LIMITATIONS / TODO
 ============================
 
-    - small memory leaks at exit (144-336 bytes). Harmless for a
-      short-lived CLI; AddressSanitizer reports no invalid access.
+    - small memory leaks at exit (about 1 KB for a larger program: Type
+      objects that live for the whole run). Harmless for a short-lived
+      CLI; AddressSanitizer reports no invalid access and the full suite
+      is clean under ASan + UBSan.
     - switch has no default case
     - no fixed arrays
-    - break/continue outside a loop falls through to the C compiler
-      instead of being caught by sema
     - no source snippet in error messages (no caret ^^^ line yet)
     - floats print with C's %g, so 3.0 prints as "3"
+    - unused *local* variables still reach gcc as -Wunused-variable;
+      only private functions are reported by C! itself
+    - io.print / os.exit / math.* may be called without the matching
+      `use` line -- `use` is not enforced as a precondition
     - std.math has abs, min, max, sqrt, pow, floor, ceil, round.
       No sin, cos, log, exp, atan2 or integer division helpers yet.
 
@@ -410,14 +456,30 @@ Other details:
         pass_math       every std.math function, args evaluated once
         pass_math_use_only   `use std.math` with no call emits nothing
 
-    7 programs the compiler must reject:
-        fail_type_errors, fail_const, fail_print_type, fail_math_type,
-        fail_default_case, fail_array, fail_undeclared_module
+    19 programs the compiler must reject, each pinned to its message
+    with `// expect: TEXT` lines (the text must appear in the diagnostic,
+    so a message cannot drift without failing the test):
+        pre-existing:
+            fail_type_errors, fail_const, fail_print_type, fail_math_type,
+            fail_default_case, fail_array, fail_undeclared_module
+        added by the error sweep:
+            fail_break_outside      'break' outside a loop or switch
+            fail_continue_outside   'continue' outside a loop
+            fail_assign_target      invalid assignment target
+            fail_missing_return     control reaches the end without returning
+            fail_divzero            division by zero
+            fail_shift_range        shift count 40 is too large for 'I32'
+            fail_type_order         self-containment and declaration order
+            fail_dupe_param         duplicate parameter
+            fail_dupe_field         duplicate struct field
+            fail_void_var           variable cannot have type 'void'
+            fail_global_order       global used before it is declared
+            fail_unknown_field_type unknown type in a struct field
 
     Every pass test's generated C is additionally compiled with
     -Wall -Wextra, so a C warning counts as a test failure.
 
-    Current result: 18 passed, 0 failed
+    Current result: 30 passed, 0 failed
 
     cbang --test                  built-in self test, RESULT: PASS
     examples/hello.cb             works
@@ -425,8 +487,9 @@ Other details:
     examples/simple.cb            works
 
 Statistics:
-    ~4,100 lines of compiler C
+    ~4,700 lines of compiler C (src/ + include/)
     40 keywords
     14 primitive types
-    39 type-checker diagnostics
+    54 type-checker diagnostics
     3 std modules
+    30 test programs (11 must pass, 19 must be rejected)

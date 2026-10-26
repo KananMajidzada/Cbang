@@ -1,0 +1,8 @@
+// A literal shift wider than the left operand is undefined in C and gcc
+// warns about it in the user's build.
+pub fn main() i32 {
+    var x: i32 = 1;
+    var y: i32 = x << 40;
+    return y;
+}
+// expect: shift count 40 is too large for 'I32'

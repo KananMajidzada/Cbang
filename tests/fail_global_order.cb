@@ -1,0 +1,6 @@
+// Top-level items are emitted in source order, so an initializer may only
+// name a global declared above it.
+var a: i32 = b;
+var b: i32 = 1;
+pub fn main() i32 { return a; }
+// expect: global 'b' is used before it is declared

@@ -1,0 +1,7 @@
+// Division by zero reaches run time as SIGFPE and warns in the C output.
+pub fn main() i32 {
+    var x: i32 = 10;
+    var y: i32 = x / 0;
+    return y;
+}
+// expect: division by zero

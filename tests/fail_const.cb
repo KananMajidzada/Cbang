@@ -4,3 +4,4 @@ pub fn main() i32 {
     K = 6;
     return 0;
 }
+// expect: cannot assign to const 'K'

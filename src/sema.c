@@ -80,14 +80,31 @@ static void declare_local(Token *name, Type *type, bool is_const) {
     v->is_const = is_const;
 }
 
+/*
+ * How much of global_table is currently in scope.
+ *
+ * Top-level `var`/`const` are emitted in source order, so an initializer may
+ * only name a global that appears above it. While checking a global's
+ * initializer this is clamped to the entries declared so far; a name that
+ * exists below it is reported as "declared later" instead of "undeclared".
+ */
+static size_t globals_visible;
+static bool saw_future_global;
+
 static VarSym *lookup_var(Token *name) {
+    saw_future_global = false;
     for (int d = scope_depth - 1; d >= 0; d--)
         for (size_t i = scope_counts[d]; i-- > 0;)
             if (name_eq_tok(&scope_stack[d][i].name, name))
                 return &scope_stack[d][i];
-    for (size_t i = global_count; i-- > 0;)
+    for (size_t i = globals_visible; i-- > 0;)
         if (name_eq_tok(&global_table[i].name, name))
             return &global_table[i];
+    for (size_t i = globals_visible; i < global_count; i++)
+        if (name_eq_tok(&global_table[i].name, name)) {
+            saw_future_global = true;
+            break;
+        }
     return NULL;
 }
 
@@ -135,6 +152,20 @@ static bool type_is_unsigned(Type *t) {
     if (!t || t->kind != TYPE_PRIMITIVE) return false;
     TokenType k = t->data.primitive;
     return (k >= KW_U8 && k <= KW_U64) || k == KW_UINTPTR;
+}
+/* Width in bits -- a literal shift count has to fit in the left operand,
+   otherwise C calls it undefined and the C compiler warns about it. */
+static int type_int_bits(Type *t) {
+    t = resolve_alias(t);
+    if (!t || t->kind != TYPE_PRIMITIVE) return 0;
+    switch (t->data.primitive) {
+        case KW_I8:  case KW_U8:  return 8;
+        case KW_I16: case KW_U16: return 16;
+        case KW_I32: case KW_U32: return 32;
+        case KW_I64: case KW_U64: return 64;
+        case KW_UINTPTR: return (int)(sizeof(void *) * 8);
+        default: return 0;
+    }
 }
 static bool type_is_bool(Type *t) {
     return t && t->kind == TYPE_PRIMITIVE && t->data.primitive == KW_BOOL;
@@ -195,6 +226,183 @@ static bool assignable(Type *to, Type *from) {
     if ((type_is_int(to) || type_is_float(to)) &&
         (type_is_int(from) || type_is_float(from))) return true;
     return false;
+}
+
+/*
+ * Declaration-time type check.
+ *
+ * These are the mistakes that used to sail straight through to the C
+ * compiler, which then complained about a file the user never wrote --
+ * `unknown type name 'Foo'', `variable or field 'v' declared void'.
+ * The type checker sees the declaration, so it is the one that should say it.
+ *
+ * `program` and `at_index` add the ordering rule: top-level declarations are
+ * emitted in source order, so a struct field or a global may only name a type
+ * defined above it by value. Through a pointer it may name any type, because
+ * the forward `typedef struct X X;` we emit keeps the name in scope.
+ * at_index < 0 means "inside a function body", where everything above is
+ * already on the page -- no ordering constraint at all.
+ */
+static long type_decl_index(ASTNodeList *program, const char *name, size_t len) {
+    if (!program) return -1;
+    for (size_t i = 0; i < program->count; i++) {
+        ASTNode *n = program->items[i];
+        Token *t = NULL;
+        if (n->type == AST_STRUCT_DECL || n->type == AST_UNION_DECL)
+            t = &n->data.aggregate_decl.name;
+        else if (n->type == AST_ENUM_DECL)
+            t = &n->data.enum_decl.name;
+        else if (n->type == AST_TYPE_ALIAS)
+            t = &n->data.type_alias.name;
+        if (t && t->length == len && memcmp(t->start, name, len) == 0)
+            return (long)i;
+    }
+    return -1;
+}
+
+static void check_type_at(Type *t, Token *at, const char *what,
+                          ASTNodeList *program, long at_index, bool behind_ptr) {
+    if (!t) return;
+    if (t->kind == TYPE_PRIMITIVE) {
+        if (t->data.primitive == KW_VOID) {
+            char msg[256];
+            snprintf(msg, sizeof(msg), "%s cannot have type 'void'", what);
+            err(at, msg);
+        }
+        return;
+    }
+    if (t->kind == TYPE_POINTER) {
+        /* `*Node` inside `struct Node` is legal: a pointer to an
+           incomplete type is exactly what forward references need. */
+        check_type_at(t->data.pointer.pointee, at, what, program, at_index, true);
+        return;
+    }
+    if (t->kind != TYPE_NAMED) return;
+
+    const char *nm = t->data.named.name;
+    size_t len = t->data.named.len;
+    long di = type_decl_index(program, nm, len);
+
+    if (at_index >= 0 && !behind_ptr && di >= at_index && di >= 0) {
+        char msg[256];
+        if (di == at_index)
+            snprintf(msg, sizeof(msg),
+                     "type '%.*s' cannot contain itself by value (use a pointer: '*%.*s')",
+                     (int)len, nm, (int)len, nm);
+        else
+            snprintf(msg, sizeof(msg),
+                     "type '%.*s' is used before it is declared -- move the definition up, or use a pointer",
+                     (int)len, nm);
+        err(at, msg);
+        return;
+    }
+    /* A name may be a struct/enum/union or a `type X = Y` alias -- each lives
+       in its own table, so resolve first and only then call it unknown. */
+    Type *r = resolve_alias(t);
+    if (di < 0 && r == t && !lookup_struct(nm, len)) {
+        char msg[256];
+        snprintf(msg, sizeof(msg), "unknown type '%.*s'", (int)len, nm);
+        err(at, msg);
+        return;
+    }
+    if (r != t) check_type_at(r, at, what, program, at_index, behind_ptr);
+}
+
+/*
+ * Assignment needs something that can hold a value.
+ *
+ * `5 = x` and `f() = x` are C errors (lvalue required). Catching them here
+ * gives one clear line instead of a compiler message about generated code.
+ */
+static bool is_lvalue(ASTNode *n) {
+    if (!n) return false;
+    switch (n->type) {
+        case AST_VAR_REF:                       /* x = ... */
+        case AST_FIELD:                         /* p.x = ...  (*p).x too */
+        case AST_INDEX:                         /* a[i] = ... , s[i] = ... */
+            return true;
+        case AST_UNARY:
+            return n->data.unary.op == OP_DEREF;  /* *p = ... */
+        default:
+            return false;
+    }
+}
+
+/* Any `break` anywhere below, even in a nested loop -- conservative on
+   purpose: assuming a loop may terminate is the safe direction. */
+static bool has_break(ASTNode *n) {
+    if (!n) return false;
+    switch (n->type) {
+        case AST_BREAK_STMT: return true;
+        case AST_BLOCK:
+            for (size_t i = 0; i < n->data.block.stmts->count; i++)
+                if (has_break(n->data.block.stmts->items[i])) return true;
+            return false;
+        case AST_IF_STMT:
+            return has_break(n->data.if_stmt.then_branch) ||
+                   has_break(n->data.if_stmt.else_branch);
+        case AST_FOR_STMT:
+            return has_break(n->data.for_stmt.body);
+        case AST_WHILE_STMT:
+            return has_break(n->data.while_stmt.body);
+        case AST_SWITCH_STMT:
+            for (size_t i = 0; i < n->data.switch_stmt.cases->count; i++)
+                if (has_break(n->data.switch_stmt.cases->items[i])) return true;
+            return false;
+        case AST_CASE_STMT:
+            return has_break(n->data.case_stmt.body);
+        case AST_DEFER_STMT:
+            return has_break(n->data.defer_stmt.body);
+        case AST_RETURN_STMT:
+            return false;
+        default:
+            return false;
+    }
+}
+
+/*
+ * Does every path through this statement definitely return?
+ *
+ * Deliberately conservative: it only says "yes" when it is certain, so a
+ * function is flagged only when control can really fall off the end. In C
+ * that returns whatever happened to be in the register -- our tests once
+ * exited with code 1 for that reason, which is a terrible bug to debug.
+ */
+static bool definitely_returns(ASTNode *n) {
+    if (!n) return false;
+    switch (n->type) {
+        case AST_RETURN_STMT:
+            return true;
+        case AST_BLOCK:
+            for (size_t i = 0; i < n->data.block.stmts->count; i++)
+                if (definitely_returns(n->data.block.stmts->items[i])) return true;
+            return false;
+        case AST_IF_STMT:
+            /* an if without else can always fall through */
+            if (!n->data.if_stmt.else_branch) return false;
+            return definitely_returns(n->data.if_stmt.then_branch) &&
+                   definitely_returns(n->data.if_stmt.else_branch);
+        case AST_WHILE_STMT:
+            /* while (true) with no break never comes back */
+            return n->data.while_stmt.cond &&
+                   n->data.while_stmt.cond->type == AST_BOOL_LIT &&
+                   n->data.while_stmt.cond->data.bool_lit.value &&
+                   !has_break(n->data.while_stmt.body);
+        case AST_FOR_STMT:
+            /* for (;;) with no break never comes back */
+            return !n->data.for_stmt.cond && !has_break(n->data.for_stmt.body);
+        case AST_EXPR_STMT:
+            /* os.exit() is declared void but never returns */
+            return n->data.expr_stmt.expr &&
+                   n->data.expr_stmt.expr->type == AST_CALL &&
+                   n->data.expr_stmt.expr->data.call.callee->type == AST_FIELD &&
+                   n->data.expr_stmt.expr->data.call.callee->data.field.base->type == AST_VAR_REF &&
+                   n->data.expr_stmt.expr->data.call.callee->data.field.base->data.var_ref.name.length == 2 &&
+                   memcmp(n->data.expr_stmt.expr->data.call.callee->data.field.base->data.var_ref.name.start,
+                          "os", 2) == 0;
+        default:
+            return false;
+    }
 }
 
 /* Display name for error messages */
@@ -388,8 +596,15 @@ static Type *sema_expr(ASTNode *n) {
             VarSym *v = lookup_var(&n->data.var_ref.name);
             if (!v) {
                 char msg[256];
-                snprintf(msg, sizeof(msg), "undeclared variable '%.*s'",
-                         (int)n->data.var_ref.name.length, n->data.var_ref.name.start);
+                if (saw_future_global)
+                    /* exists, but below us: C would say "undeclared here" */
+                    snprintf(msg, sizeof(msg),
+                             "global '%.*s' is used before it is declared",
+                             (int)n->data.var_ref.name.length,
+                             n->data.var_ref.name.start);
+                else
+                    snprintf(msg, sizeof(msg), "undeclared variable '%.*s'",
+                             (int)n->data.var_ref.name.length, n->data.var_ref.name.start);
                 err(&n->data.var_ref.name, msg);
                 return type_primitive(KW_I32); /* assume i32 to continue checking */
             }
@@ -415,6 +630,12 @@ static Type *sema_expr(ASTNode *n) {
             TokenType op = n->data.binary.op;
 
             if (op == OP_ASSIGN) {
+                /* Assignment target first, so `5 = x` reports the real
+                   problem instead of a confusing type mismatch. */
+                if (!is_lvalue(n->data.binary.left)) {
+                    err(&n->token, "invalid assignment target");
+                    return lt;
+                }
                 if (lt && !assignable(lt, rt)) {
                     char msg[256];
                     snprintf(msg, sizeof(msg), "cannot assign '%s' to '%s'",
@@ -434,6 +655,48 @@ static Type *sema_expr(ASTNode *n) {
                 }
                 return lt;
             }
+
+            /* Division and remainder by a literal zero: the C compiler warns
+               about it and the program dies with SIGFPE at run time. */
+            if ((op == OP_DIV || op == OP_MOD) &&
+                n->data.binary.right->type == AST_INT_LIT &&
+                n->data.binary.right->data.int_lit.value == 0) {
+                err(&n->token, op == OP_DIV ? "division by zero"
+                                            : "remainder by zero");
+                return lt;
+            }
+
+            /* % in C is integer-only, and C rejects floats for << >> & | ^.
+               Left unchecked these reach the C compiler as errors. */
+            if (op == OP_MOD) {
+                if (!type_is_int(lt) && !is_int_lit(lt)) {
+                    err(&n->token, "'%' requires integer operands");
+                    return type_primitive(KW_I32);
+                }
+            }
+            if (op == OP_SHL || op == OP_SHR || op == OP_BIT_AND ||
+                op == OP_BIT_OR || op == OP_BIT_XOR) {
+                if (!type_is_int(lt) && !is_int_lit(lt)) {
+                    err(&n->token, "bitwise and shift operators require integer operands");
+                    return type_primitive(KW_I32);
+                }
+                if (op == OP_SHL || op == OP_SHR) {
+                    /* a literal shift past the width is undefined in C and
+                       gcc warns about it in the user's build */
+                    if (n->data.binary.right->type == AST_INT_LIT) {
+                        int width = type_is_int(lt) ? type_int_bits(lt) : 32;
+                        unsigned long long s = n->data.binary.right->data.int_lit.value;
+                        if (width > 0 && s >= (unsigned long long)width) {
+                            char msg[256];
+                            snprintf(msg, sizeof(msg),
+                                     "shift count %llu is too large for '%s'",
+                                     s, type_name(lt));
+                            err(&n->token, msg);
+                        }
+                    }
+                }
+            }
+
             /* Comparison -> bool */
             if (op == OP_EQ || op == OP_NE || op == OP_LT || op == OP_GT ||
                 op == OP_LE || op == OP_GE || op == OP_AND || op == OP_OR)
@@ -672,11 +935,24 @@ static void sema_block(ASTNode *n) {
 
 static bool in_defer;
 
+/* Loop/switch nesting for break and continue. Without this, `break;` at
+   function top level reached the C compiler, which complained about a
+   generated file instead of the line the user typed. */
+static int loop_depth;
+static int switch_depth;
+
 static void sema_stmt(ASTNode *n) {
     if (!n) return;
     switch (n->type) {
         case AST_VAR_DECL: {
             Type *it = n->data.var_decl.init ? sema_expr(n->data.var_decl.init) : NULL;
+            if (n->data.var_decl.var_type) {
+                char what[128];
+                snprintf(what, sizeof(what), "variable '%.*s'",
+                         (int)n->data.var_decl.name.length, n->data.var_decl.name.start);
+                check_type_at(n->data.var_decl.var_type, &n->data.var_decl.name,
+                              what, NULL, -1, false);
+            }
             if (n->data.var_decl.init && n->data.var_decl.var_type && it &&
                 !assignable(n->data.var_decl.var_type, it)) {
                 char msg[256];
@@ -691,6 +967,13 @@ static void sema_stmt(ASTNode *n) {
         case AST_CONST_DECL: {
             Type *it = n->data.var_decl.init ? sema_expr(n->data.var_decl.init) : NULL;
             Type *t = n->data.var_decl.var_type ? n->data.var_decl.var_type : it;
+            if (n->data.var_decl.var_type) {
+                char what[128];
+                snprintf(what, sizeof(what), "constant '%.*s'",
+                         (int)n->data.var_decl.name.length, n->data.var_decl.name.start);
+                check_type_at(n->data.var_decl.var_type, &n->data.var_decl.name,
+                              what, NULL, -1, false);
+            }
             declare_local(&n->data.var_decl.name, t, true);
             break;
         }
@@ -713,11 +996,13 @@ static void sema_stmt(ASTNode *n) {
         }
         case AST_FOR_STMT:
             push_scope();
+            loop_depth++;
             if (n->data.for_stmt.init) sema_stmt(n->data.for_stmt.init);
             if (n->data.for_stmt.cond) sema_expr(n->data.for_stmt.cond);
             if (n->data.for_stmt.step) sema_expr(n->data.for_stmt.step);
             if (n->data.for_stmt.body->type == AST_BLOCK) sema_block(n->data.for_stmt.body);
             else sema_stmt(n->data.for_stmt.body);
+            loop_depth--;
             pop_scope();
             break;
         case AST_WHILE_STMT: {
@@ -728,17 +1013,21 @@ static void sema_stmt(ASTNode *n) {
                          type_name(ct));
                 err(&n->token, msg);
             }
+            loop_depth++;
             if (n->data.while_stmt.body->type == AST_BLOCK) sema_block(n->data.while_stmt.body);
             else sema_stmt(n->data.while_stmt.body);
+            loop_depth--;
             break;
         }
         case AST_SWITCH_STMT:
             sema_expr(n->data.switch_stmt.expr);
+            switch_depth++;
             for (size_t i = 0; i < n->data.switch_stmt.cases->count; i++) {
                 ASTNode *c = n->data.switch_stmt.cases->items[i];
                 if (c->data.case_stmt.expr) sema_expr(c->data.case_stmt.expr);
                 if (c->data.case_stmt.body) sema_block(c->data.case_stmt.body);
             }
+            switch_depth--;
             break;
         case AST_RETURN_STMT: {
             if (in_defer) {
@@ -759,7 +1048,14 @@ static void sema_stmt(ASTNode *n) {
             }
             break;
         }
-        case AST_BREAK_STMT: case AST_CONTINUE_STMT: break;
+        case AST_BREAK_STMT:
+            if (loop_depth == 0 && switch_depth == 0)
+                err(&n->token, "'break' outside a loop or switch");
+            break;
+        case AST_CONTINUE_STMT:
+            if (loop_depth == 0)
+                err(&n->token, "'continue' outside a loop");
+            break;
         case AST_DEFER_STMT: {
             bool saved = in_defer;
             in_defer = true;
@@ -796,8 +1092,22 @@ static void collect_top_level(ASTNodeList *program) {
         f->name = (Name){ n->data.fn_decl.name.start, n->data.fn_decl.name.length };
         f->nparams = n->data.fn_decl.params->count;
         f->params = calloc(f->nparams ? f->nparams : 1, sizeof(Type*));
-        for (size_t j = 0; j < f->nparams; j++)
-            f->params[j] = n->data.fn_decl.params->items[j]->data.var_decl.var_type;
+        for (size_t j = 0; j < f->nparams; j++) {
+            ASTNode *p = n->data.fn_decl.params->items[j];
+            f->params[j] = p->data.var_decl.var_type;
+            /* `fn f(a: i32, a: i32)` -- C says "redefinition of parameter" */
+            for (size_t k = 0; k < j; k++) {
+                Token *q = &n->data.fn_decl.params->items[k]->data.var_decl.name;
+                if (q->length == p->data.var_decl.name.length &&
+                    memcmp(q->start, p->data.var_decl.name.start, q->length) == 0) {
+                    char msg[256];
+                    snprintf(msg, sizeof(msg), "duplicate parameter '%.*s'",
+                             (int)p->data.var_decl.name.length, p->data.var_decl.name.start);
+                    err(&p->data.var_decl.name, msg);
+                    break;
+                }
+            }
+        }
         f->ret = n->data.fn_decl.ret_type;
         f->is_extern = n->data.fn_decl.is_extern;
     }
@@ -822,6 +1132,16 @@ static void collect_top_level(ASTNodeList *program) {
         if (is_agg) {
             for (size_t j = 0; j < n->data.aggregate_decl.fields->count && s->nfields < MAX_FIELDS; j++) {
                 ASTNode *fld = n->data.aggregate_decl.fields->items[j];
+                /* `struct S { i32 x; i32 x; }` -- C says "duplicate member" */
+                for (size_t k = 0; k < s->nfields; k++)
+                    if (name_eq_tok(&s->field_names[k], &fld->data.var_decl.name)) {
+                        char msg[256];
+                        snprintf(msg, sizeof(msg), "duplicate field '%.*s'",
+                                 (int)fld->data.var_decl.name.length,
+                                 fld->data.var_decl.name.start);
+                        err(&fld->data.var_decl.name, msg);
+                        break;
+                    }
                 s->field_names[s->nfields] = (Name){ fld->data.var_decl.name.start,
                                                      fld->data.var_decl.name.length };
                 s->field_types[s->nfields] = fld->data.var_decl.var_type;
@@ -878,6 +1198,50 @@ static void collect_top_level(ASTNodeList *program) {
         }
         next:;
     }
+
+    /* Pass 1e: validate every declared type -- existence, no void storage,
+       and the source-order rule for the positions that land in the C file
+       before the type's own definition (struct fields, aliases, globals).
+       Runs last so every type and alias is known by name. */
+    for (size_t i = 0; i < program->count; i++) {
+        ASTNode *n = program->items[i];
+        long idx = (long)i;
+        if (n->type == AST_STRUCT_DECL || n->type == AST_UNION_DECL) {
+            for (size_t j = 0; j < n->data.aggregate_decl.fields->count; j++) {
+                ASTNode *fld = n->data.aggregate_decl.fields->items[j];
+                char what[128];
+                snprintf(what, sizeof(what), "field '%.*s'",
+                         (int)fld->data.var_decl.name.length,
+                         fld->data.var_decl.name.start);
+                check_type_at(fld->data.var_decl.var_type, &fld->data.var_decl.name,
+                              what, program, idx, false);
+            }
+        } else if (n->type == AST_TYPE_ALIAS) {
+            char what[128];
+            snprintf(what, sizeof(what), "alias '%.*s'",
+                     (int)n->data.type_alias.name.length,
+                     n->data.type_alias.name.start);
+            check_type_at(n->data.type_alias.aliased_type, &n->data.type_alias.name,
+                          what, program, idx, false);
+        } else if (n->type == AST_VAR_DECL || n->type == AST_CONST_DECL) {
+            char what[128];
+            snprintf(what, sizeof(what), "global '%.*s'",
+                     (int)n->data.var_decl.name.length, n->data.var_decl.name.start);
+            check_type_at(n->data.var_decl.var_type, &n->data.var_decl.name,
+                          what, program, idx, false);
+        } else if (n->type == AST_FN_DECL) {
+            /* function bodies are emitted last: no ordering rule, but the
+               parameter and return types still have to exist and not be void */
+            for (size_t j = 0; j < n->data.fn_decl.params->count; j++) {
+                ASTNode *p = n->data.fn_decl.params->items[j];
+                char what[128];
+                snprintf(what, sizeof(what), "parameter '%.*s'",
+                         (int)p->data.var_decl.name.length, p->data.var_decl.name.start);
+                check_type_at(p->data.var_decl.var_type, &p->data.var_decl.name,
+                              what, program, -1, false);
+            }
+        }
+    }
 }
 
 int sema_check(ASTNodeList *program) {
@@ -885,8 +1249,19 @@ int sema_check(ASTNodeList *program) {
     fn_count = struct_count = global_count = alias_count = 0;
     scope_depth = 0;
     in_defer = false;
+    loop_depth = switch_depth = 0;
 
     collect_top_level(program);
+
+    /* Everything is visible from a function body; global initializers clamp
+       this while they run (top-level items are emitted in source order). */
+    globals_visible = global_count;
+    size_t n_globals = 0;
+    for (size_t i = 0; i < program->count; i++)
+        if (program->items[i]->type == AST_CONST_DECL ||
+            program->items[i]->type == AST_VAR_DECL) n_globals++;
+    size_t gbase = global_count - n_globals;
+    size_t gseen = 0;
 
     /* Check use declarations: only std.io, std.os and std.math exist so far */
     for (size_t i = 0; i < program->count; i++) {
@@ -909,9 +1284,16 @@ int sema_check(ASTNodeList *program) {
     for (size_t i = 0; i < program->count; i++) {
         ASTNode *n = program->items[i];
 
-        /* Check global initializers */
-        if ((n->type == AST_CONST_DECL || n->type == AST_VAR_DECL) && n->data.var_decl.init)
-            sema_expr(n->data.var_decl.init);
+        /* Check global initializers. Only the globals declared above this
+           one are on the page yet, so hide the rest for the duration. */
+        if (n->type == AST_CONST_DECL || n->type == AST_VAR_DECL) {
+            if (n->data.var_decl.init) {
+                globals_visible = gbase + gseen + 1;
+                sema_expr(n->data.var_decl.init);
+                globals_visible = global_count;
+            }
+            gseen++;
+        }
 
         if (n->type != AST_FN_DECL || !n->data.fn_decl.body) continue;
 
@@ -926,6 +1308,18 @@ int sema_check(ASTNodeList *program) {
         sema_block(n->data.fn_decl.body);
         pop_scope();
         scope_depth = 0;
+
+        /* Falling off the end of a non-void function returns whatever
+           happened to be in the register -- undefined, and miserable to
+           debug. Say so here instead. */
+        if (current_ret_type && !type_is_void(current_ret_type) &&
+            !definitely_returns(n->data.fn_decl.body)) {
+            char msg[256];
+            snprintf(msg, sizeof(msg),
+                     "control reaches the end of '%.*s' without returning a value",
+                     (int)n->data.fn_decl.name.length, n->data.fn_decl.name.start);
+            err(&n->data.fn_decl.name, msg);
+        }
     }
 
     /* Check main exists when building executables - always warn if pub main missing */

@@ -154,9 +154,11 @@ Each argument is evaluated exactly once, so `math.min(bump(), 5)` calls `bump()`
 
 ## Diagnostics
 
-The type checker performs 39 checks, and every error includes a line and column. These cover undeclared names, unknown types and modules, argument count and type mismatches, invalid assignments and returns, missing fields, duplicate definitions, values that cannot be printed, writes to `const` values, and the argument rules of `std.math` — including mixing signed with unsigned in `math.min`.
+The type checker performs 54 checks, and every error includes a line and column. These cover undeclared names, unknown types and modules, argument count and type mismatches, invalid assignments and returns, missing fields, duplicate definitions, values that cannot be printed, writes to `const` values, and the argument rules of `std.math` — including mixing signed with unsigned in `math.min`.
 
-The lexer additionally warns when a string contains `/n`, which is usually a mistyped `\n`.
+It also catches the mistakes that would otherwise surface inside the generated C: `break` and `continue` outside a loop, assigning to something that is not a variable, division or remainder by zero, a shift wider than its operand, duplicate parameters and duplicate struct fields, a field or global naming a type or value declared after it, `void` used as storage, and a non-void function whose control can fall off the end without returning.
+
+The lexer additionally warns when a string contains `/n`, which is usually a mistyped `\n`. A private function that nothing calls is reported as `[warning] line:col: private function 'x' is never used`, against your own line rather than the generated file.
 
 ## Limitations
 
@@ -174,19 +176,18 @@ Not yet supported:
 
 Known issues:
 
-- Small memory leaks at exit (144 to 336 bytes). AddressSanitizer reports no invalid access.
-- `break` and `continue` outside a loop are not caught by the type checker and are left to the C compiler.
+- Small memory leaks at exit (about 1 KB for a larger program — `Type` objects that live for the whole run). AddressSanitizer reports no invalid access.
 - Error messages do not yet include a source snippet.
 
 ## Project Status
 
-CBang is under active development. The built-in self test (`cbang --test`) passes, all programs in `examples/` build and run, and the test suite in `tests/` passes 18 of 18:
+CBang is under active development. The built-in self test (`cbang --test`) passes, all programs in `examples/` build and run, and the test suite in `tests/` passes 30 of 30:
 
 ```sh
 sh tests/run.sh
 ```
 
-Eleven programs must compile and exit 0, seven must be rejected by the compiler, `defer` is checked against expected output, and every generated C file is additionally compiled with `-Wall -Wextra` — a C warning counts as a failure. Last verified 2026-10-26.
+Eleven programs must compile and exit 0, nineteen must be rejected by the compiler — each pinned to the exact text of its message with `// expect:`, so a diagnostic cannot drift unnoticed — `defer` is checked against expected output, and every generated C file is additionally compiled with `-Wall -Wextra` — a C warning counts as a failure. The whole suite also passes with the compiler built under AddressSanitizer and UndefinedBehaviorSanitizer. Last verified 2026-10-26.
 
 ## License
 
