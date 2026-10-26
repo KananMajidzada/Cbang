@@ -1,0 +1,6 @@
+// Assigning to a const must be caught by sema, not by the C compiler.
+pub fn main() i32 {
+    const K: i32 = 5;
+    K = 6;
+    return 0;
+}

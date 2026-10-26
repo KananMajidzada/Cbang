@@ -1,0 +1,9 @@
+// extern fn declares a C symbol; must never be emitted as static.
+use std.io;
+extern fn abs(x: i32) i32;
+
+pub fn main() i32 {
+    var r: i32 = abs(-5);
+    if (r == 5) { io.print("extern abs ok\n"); }
+    return 0;
+}

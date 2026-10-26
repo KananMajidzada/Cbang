@@ -1,6 +1,7 @@
 #include "codegen.h"
 #include <string.h>
 #include <stdlib.h>
+#include <limits.h>    /* LLONG_MAX: decide when an int literal needs a ULL suffix */
 
 /* ========================================================================== */
 /* Generator State                                                            */
@@ -9,9 +10,18 @@
 typedef struct {
     FILE *out;
     int indent;
-    bool needs_io;      /* saw use std.io -> emit runtime helper */
+    bool needs_io;      /* io.print actually used -> stdio.h */
     bool needs_os;      /* saw use std.os -> stdlib.h for exit() */
     bool in_function;   /* to know if defer is valid */
+
+    /* Which print helpers the program uses. Set by scan_prints() before
+       anything is emitted, so we only write helpers that get called —
+       an unused static helper would be a -Wunused-function warning. */
+    bool need_str;
+    bool need_sint;
+    bool need_uint;
+    bool need_float;
+    bool need_bool;
 
     /*
      * Defer lowering machinery.
@@ -92,9 +102,17 @@ static const char *op_spelling(TokenType t) {
 static void emit_expr(Gen *g, ASTNode *n) {
     if (!n) return;
     switch (n->type) {
-        case AST_INT_LIT:
-            fprintf(g->out, "%lld", n->data.int_lit.value);
+        case AST_INT_LIT: {
+            /* Above LLONG_MAX a bare decimal constant isn't valid C — the C
+               compiler would reject it. The ULL suffix makes it a proper
+               unsigned constant that fits u64. */
+            unsigned long long v = n->data.int_lit.value;
+            if (v > (unsigned long long)LLONG_MAX)
+                fprintf(g->out, "%lluULL", v);
+            else
+                fprintf(g->out, "%llu", v);
             break;
+        }
         case AST_FLOAT_LIT:
             fprintf(g->out, "%g", n->data.float_lit.value);
             break;
@@ -152,8 +170,18 @@ static void emit_expr(Gen *g, ASTNode *n) {
                     size_t fnlen = n->data.call.callee->data.field.field_name.length;
                     if (mlen == 2 && memcmp(mod, "io", 2) == 0 &&
                         fnlen == 5 && memcmp(fn, "print", 5) == 0) {
-                        g->needs_io = true;
-                        fputs("cb_print(", g->out);
+                        /* sema wrote print_kind on the node - codegen has no
+                           type information of its own, so trust the note. */
+                        const char *helper;
+                        switch (n->data.call.print_kind) {
+                            case PRINT_UINT:  helper = "cb_print_u64";  break;
+                            case PRINT_FLOAT: helper = "cb_print_f64";  break;
+                            case PRINT_BOOL:  helper = "cb_print_bool"; break;
+                            case PRINT_SINT:  helper = "cb_print_i64";  break;
+                            default:          helper = "cb_print";      break;
+                        }
+                        fputs(helper, g->out);
+                        fputc('(', g->out);
                         if (n->data.call.args->count > 0)
                             emit_expr(g, n->data.call.args->items[0]);
                         fputc(')', g->out);
@@ -557,6 +585,80 @@ static void emit_top_level(Gen *g, ASTNode *n) {
 /* Program Entry                                                              */
 /* ========================================================================== */
 
+/* ========================================================================== */
+/* Helper Usage Pre-scan                                                      */
+/* ========================================================================== */
+
+/*
+ * The runtime helpers are written ABOVE the function bodies that call them,
+ * so we must know which ones are needed before emitting anything: a helper
+ * that is declared but never called is a -Wunused-function warning, which
+ * would break the zero-warning guarantee.
+ *
+ * sema annotated every io.print with its PRINT_* kind, so this walk only
+ * tallies them. It also decides whether <stdio.h> is needed at all --
+ * `use std.io` with no io.print no longer drags in dead code.
+ */
+static void note_print(Gen *g, int kind) {
+    bool *slot[] = { NULL, &g->need_str, &g->need_sint, &g->need_uint,
+                     &g->need_float, &g->need_bool };
+    if (kind > PRINT_NONE && kind <= PRINT_BOOL) {
+        *slot[kind] = true;
+        g->needs_io = true;         /* any print needs <stdio.h> */
+    }
+}
+
+static void scan_node(Gen *g, ASTNode *n);
+static void scan_list(Gen *g, ASTNodeList *l) {
+    if (!l) return;
+    for (size_t i = 0; i < l->count; i++)
+        scan_node(g, l->items[i]);
+}
+
+static void scan_node(Gen *g, ASTNode *n) {
+    if (!n) return;
+    switch (n->type) {
+        case AST_UNARY:   scan_node(g, n->data.unary.operand); break;
+        case AST_BINARY:  scan_node(g, n->data.binary.left);
+                          scan_node(g, n->data.binary.right); break;
+        case AST_CALL:    note_print(g, n->data.call.print_kind);
+                          scan_node(g, n->data.call.callee);
+                          scan_list(g, n->data.call.args); break;
+        case AST_INDEX:   scan_node(g, n->data.index.base);
+                          scan_node(g, n->data.index.index); break;
+        case AST_FIELD:   scan_node(g, n->data.field.base); break;
+        case AST_CAST:    scan_node(g, n->data.cast.expr); break;
+        case AST_VAR_DECL: case AST_CONST_DECL:
+                          scan_node(g, n->data.var_decl.init); break;
+        case AST_FN_DECL: scan_node(g, n->data.fn_decl.body); break;
+        case AST_STRUCT_DECL: case AST_UNION_DECL:
+                          scan_list(g, n->data.aggregate_decl.fields); break;
+        case AST_ENUM_DECL:
+                          scan_list(g, n->data.enum_decl.variants); break;
+        case AST_EXTERN_DECL:
+                          scan_node(g, n->data.extern_decl.decl); break;
+        case AST_BLOCK:   scan_list(g, n->data.block.stmts); break;
+        case AST_IF_STMT: scan_node(g, n->data.if_stmt.cond);
+                          scan_node(g, n->data.if_stmt.then_branch);
+                          scan_node(g, n->data.if_stmt.else_branch); break;
+        case AST_FOR_STMT: scan_node(g, n->data.for_stmt.init);
+                          scan_node(g, n->data.for_stmt.cond);
+                          scan_node(g, n->data.for_stmt.step);
+                          scan_node(g, n->data.for_stmt.body); break;
+        case AST_WHILE_STMT: scan_node(g, n->data.while_stmt.cond);
+                          scan_node(g, n->data.while_stmt.body); break;
+        case AST_SWITCH_STMT: scan_node(g, n->data.switch_stmt.expr);
+                          scan_list(g, n->data.switch_stmt.cases); break;
+        case AST_CASE_STMT: scan_node(g, n->data.case_stmt.expr);
+                          scan_node(g, n->data.case_stmt.body); break;
+        case AST_RETURN_STMT: scan_node(g, n->data.return_stmt.value); break;
+        case AST_DEFER_STMT: scan_node(g, n->data.defer_stmt.body); break;
+        case AST_EXPR_STMT: scan_node(g, n->data.expr_stmt.expr); break;
+        /* leaves: literals, var refs, and the type-only nodes */
+        default: break;
+    }
+}
+
 bool codegen_emit_c(ASTNodeList *program, const char *out_path) {
     FILE *out = fopen(out_path, "w");
     if (!out) { perror(out_path); return false; }
@@ -564,16 +666,21 @@ bool codegen_emit_c(ASTNodeList *program, const char *out_path) {
     Gen g = { .out = out, .indent = 0, .needs_io = false, .needs_os = false,
               .in_function = false, .defer_sp = 0, .in_defer_emit = false };
 
-    /* Pass 1: check use declarations, emit headers they need */
+    /* Pass 1: `use std.os` decides <stdlib.h>. io is decided by usage:
+       see scan_prints() below -- `use std.io` alone means nothing. */
     for (size_t i = 0; i < program->count; i++) {
         ASTNode *n = program->items[i];
         if (n->type == AST_USE_DECL) {
             const char *p = n->data.use_decl.path.start;
             size_t len = n->data.use_decl.path.length;
-            if (len == 6 && memcmp(p, "std.io", 6) == 0) g.needs_io = true;
-            else if (len == 6 && memcmp(p, "std.os", 6) == 0) g.needs_os = true;
+            if (len == 6 && memcmp(p, "std.os", 6) == 0) g.needs_os = true;
         }
     }
+
+    /* Find every io.print before writing anything, so we emit exactly the
+       helpers that get called and no more. */
+    for (size_t i = 0; i < program->count; i++)
+        scan_node(&g, program->items[i]);
 
     fputs("/* Generated by cbang - C! (C-Bang) compiler */\n", out);
     fputs("#include <stdint.h>\n#include <stdbool.h>\n#include <stddef.h>\n", out);
@@ -583,10 +690,33 @@ bool codegen_emit_c(ASTNodeList *program, const char *out_path) {
 
     /* cb_str runtime: C! str = {ptr,len} slice (spec section 2) */
     fputs("typedef struct { const uint8_t *ptr; uint64_t len; } cb_str;\n\n", out);
-    if (g.needs_io) {
-        fputs("static void cb_print(cb_str s) {\n", out);
-        fputs("    fwrite(s.ptr, 1, s.len, stdout);\n", out);
-        fputs("}\n\n", out);
+
+    /* Print helpers -- only the ones the program actually uses.
+       Each takes the widest form so C promotes the argument for us. */
+    if (g.need_str) {
+        fputs("static void cb_print(cb_str s) {\n"
+              "    fwrite(s.ptr, 1, s.len, stdout);\n"
+              "}\n\n", out);
+    }
+    if (g.need_sint) {
+        fputs("static void cb_print_i64(int64_t v) {\n"
+              "    fprintf(stdout, \"%lld\", (long long)v);\n"
+              "}\n\n", out);
+    }
+    if (g.need_uint) {
+        fputs("static void cb_print_u64(uint64_t v) {\n"
+              "    fprintf(stdout, \"%llu\", (unsigned long long)v);\n"
+              "}\n\n", out);
+    }
+    if (g.need_float) {
+        fputs("static void cb_print_f64(double v) {\n"
+              "    fprintf(stdout, \"%g\", v);\n"
+              "}\n\n", out);
+    }
+    if (g.need_bool) {
+        fputs("static void cb_print_bool(bool v) {\n"
+              "    fputs(v ? \"true\" : \"false\", stdout);\n"
+              "}\n\n", out);
     }
 
     /* Pass 2: type definitions FIRST (structs/enums/aliases/globals),

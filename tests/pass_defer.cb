@@ -1,0 +1,21 @@
+// defer must run LIFO and still run on early return.
+use std.io;
+
+fn run() i32 {
+    defer { io.print("cleanup 1\n"); }
+    defer { io.print("cleanup 2\n"); }
+    io.print("working\n");
+    if (true) {
+        io.print("early exit\n");
+        return 7;
+    }
+    return 0;
+}
+
+pub fn main() i32 {
+    var code: i32 = run();
+    if (code == 7) {
+        io.print("got 7\n");
+    }
+    return 0;
+}

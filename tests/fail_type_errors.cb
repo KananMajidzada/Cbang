@@ -1,0 +1,14 @@
+// 7 distinct type errors. Compilation must fail.
+use std.io;
+
+fn foo(a: i32) i32 { return a; }
+
+pub fn main() i32 {
+    var x: i32 = "hello";
+    var y: i32 = undefined_var + 1;
+    foo(1, 2, 3);
+    bar(4);
+    io.print(42 as str);
+    z = 5;
+    return "not an int";
+}

@@ -1,0 +1,12 @@
+// Char literals and escapes (the lexer once read 'A' as 0x27).
+use std.io;
+
+pub fn main() i32 {
+    var c: i32 = 'A';
+    if (c == 65) { io.print("char A ok\n"); }
+    var d: i32 = '\n';
+    if (d == 10) { io.print("escape n ok\n"); }
+    var q: i32 = '\'';
+    if (q == 39) { io.print("escape quote ok\n"); }
+    return 0;
+}

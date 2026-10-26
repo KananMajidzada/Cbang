@@ -1,0 +1,12 @@
+// Nested struct field access.
+use std.io;
+struct Inner { i32 v; }
+struct Outer { Inner in; i32 w; }
+
+pub fn main() i32 {
+    var o: Outer;
+    o.in.v = 7;
+    o.w = 1;
+    if (o.in.v + o.w == 8) { io.print("nested struct ok\n"); }
+    return 0;
+}

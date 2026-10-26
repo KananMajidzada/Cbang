@@ -1,0 +1,8 @@
+// io.print cannot print a struct or a pointer.
+use std.io;
+struct P { i32 x; }
+pub fn main() i32 {
+    var p: P;
+    io.print(p);
+    return 0;
+}

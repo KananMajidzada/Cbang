@@ -11,6 +11,20 @@
 typedef struct ASTNode ASTNode;
 typedef struct ASTNodeList ASTNodeList;
 
+/*
+ * io.print dispatch kinds.
+ *
+ * codegen cannot see types — it only walks the tree. sema, which does know
+ * the type, writes one of these numbers onto the call node so codegen knows
+ * which C helper to emit. See sema.c (io.print) and codegen.c (emit_expr).
+ */
+#define PRINT_NONE   0   /* not a builtin print, or unknown */
+#define PRINT_STR    1   /* fwrite the slice */
+#define PRINT_SINT   2   /* printf %lld */
+#define PRINT_UINT   3   /* printf %llu  (u64 max > i64 max, so separate) */
+#define PRINT_FLOAT  4   /* printf %g */
+#define PRINT_BOOL   5   /* fputs "true"/"false" */
+
 /* ========================================================================== */
 /* AST Node Types                                                             */
 /* ========================================================================== */
@@ -210,6 +224,7 @@ struct ASTNode {
         struct {
             ASTNode *callee;
             ASTNodeList *args;
+            int print_kind;     /* PRINT_* : set by sema for io.print only */
         } call;
 
         /* INDEX */
@@ -233,7 +248,7 @@ struct ASTNode {
 
         /* INT_LIT */
         struct {
-            long long value;
+            unsigned long long value;   /* always non-negative: `-x` is unary minus */
         } int_lit;
 
         /* FLOAT_LIT */

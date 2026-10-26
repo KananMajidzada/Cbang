@@ -128,6 +128,14 @@ static bool type_is_int(Type *t) {
     TokenType k = t->data.primitive;
     return (k >= KW_I8 && k <= KW_U64) || k == KW_UINTPTR;
 }
+/* Signed vs unsigned matters when printing: u64's top half has no
+   negative counterpart, so %lld would print it as a minus number. */
+static bool type_is_unsigned(Type *t) {
+    t = resolve_alias(t);
+    if (!t || t->kind != TYPE_PRIMITIVE) return false;
+    TokenType k = t->data.primitive;
+    return (k >= KW_U8 && k <= KW_U64) || k == KW_UINTPTR;
+}
 static bool type_is_bool(Type *t) {
     return t && t->kind == TYPE_PRIMITIVE && t->data.primitive == KW_BOOL;
 }
@@ -310,13 +318,32 @@ static Type *sema_expr(ASTNode *n) {
                                 err(&n->token, "io.print() takes exactly 1 argument");
                             } else {
                                 Type *at = sema_expr(n->data.call.args->items[0]);
-                                if (at && !type_is_str(at)) {
+                                /*
+                                 * codegen can't see types, so leave it a note
+                                 * telling it which C helper to call.
+                                 */
+                                int kind = PRINT_NONE;
+                                if (!at) {
+                                    /* type unknown - sema_expr already reported */
+                                } else if (type_is_str(at)) {
+                                    kind = PRINT_STR;
+                                } else if (is_int_lit(at)) {
+                                    kind = PRINT_SINT;      /* io.print(42) */
+                                } else if (type_is_int(at)) {
+                                    kind = type_is_unsigned(at) ? PRINT_UINT
+                                                                : PRINT_SINT;
+                                } else if (type_is_float(at)) {
+                                    kind = PRINT_FLOAT;
+                                } else if (type_is_bool(at)) {
+                                    kind = PRINT_BOOL;
+                                } else {
                                     char msg[256];
                                     snprintf(msg, sizeof(msg),
-                                             "io.print() expects str, got '%s'",
+                                             "io.print() cannot print type '%s'",
                                              type_name(at));
                                     err(&n->token, msg);
                                 }
+                                n->data.call.print_kind = kind;
                             }
                             return type_primitive(KW_VOID);
                         }

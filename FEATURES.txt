@@ -64,6 +64,10 @@ Integers:
     0b1010      binary
     0o17        octal
 
+    Full unsigned range: 18446744073709551615 fits.
+    Literals are never negative on their own -- `-5` is unary minus
+    applied to 5, so u64's whole range is available.
+
 Floats:
     3.14
     1.0
@@ -215,7 +219,11 @@ Nested access:         o.in.v  (verified working)
 ====================
 
 std.io:
-    io.print(str)        -> writes to stdout, no newline added
+    io.print(value)      -> writes to stdout, no newline added
+
+    Accepts: str, i8..i64, u8..u64, f32, f64, bool, and integer literals.
+    Integers print in full, including u64 max.
+    Rejected with an error: struct, union, enum, pointer.
 
 std.os:
     os.exit(code)        -> exits with that code
@@ -223,7 +231,7 @@ std.os:
 Unknown modules produce an error listing what exists.
 
 
-9. TYPE CHECKER (sema) - 24 CHECKS
+9. TYPE CHECKER (sema) - 26 CHECKS
 ==================================
 
 All of these were tested and produce an error with line:column:
@@ -252,6 +260,8 @@ All of these were tested and produce an error with line:column:
     while condition must be bool or int, got 'STR'
     return not allowed inside defer block
     cannot assign to const 'K'
+    io.print() takes exactly 1 argument
+    io.print() cannot print type 'P'
 
 Type rules:
     - integer literals are untyped until context decides
@@ -296,7 +306,6 @@ Compilation chain:
     unnamed extern params     extern fn puts(str) i32; -> parse error
     multi-file projects      one .cb file at a time
     string building          only literals, .len and .ptr
-    formatting/printing numbers   io.print takes str only
     closures / nested functions
     generics / templates
     method syntax on structs (no obj.method() - use free functions)
@@ -333,23 +342,45 @@ Other details:
       short-lived CLI; AddressSanitizer reports no invalid access.
     - switch has no default case
     - no fixed arrays
-    - io.print cannot print numbers directly
     - break/continue outside a loop falls through to the C compiler
       instead of being caught by sema
     - no source snippet in error messages (no caret ^^^ line yet)
+    - floats print with C's %g, so 3.0 prints as "3"
 
 
-15. SELF-TEST AND EXAMPLES
-==========================
+15. TESTS
+=========
 
-    cbang --test                  RESULT: PASS
+    sh tests/run.sh        runs everything
+
+    9 programs that must build and exit 0:
+        pass_print     every printable type, u64 max
+        pass_defer     LIFO order checked against expected output
+        pass_point     pointer auto-deref (spec 3.3)
+        pass_char      char literals and escapes
+        pass_nested    nested struct fields
+        pass_stress    recursion, nested loops, float math, logic
+        pass_extern     extern fn linking against libc
+        pass_alias      type X = Y resolution
+        pass_str        str indexing, .len, .ptr
+
+    6 programs the compiler must reject:
+        fail_type_errors, fail_const, fail_print_type,
+        fail_default_case, fail_array, fail_undeclared_module
+
+    Every pass test's generated C is additionally compiled with
+    -Wall -Wextra, so a C warning counts as a test failure.
+
+    Current result: 15 passed, 0 failed
+
+    cbang --test                  built-in self test, RESULT: PASS
     examples/hello.cb             works
     examples/keywords.cb          works (exercises all 40 keywords)
     examples/simple.cb            works
 
 Statistics:
-    ~3,700 lines of compiler C
+    ~3,900 lines of compiler C
     40 keywords
     14 primitive types
-    24 type-checker diagnostics
+    26 type-checker diagnostics
     2 std modules

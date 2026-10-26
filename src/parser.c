@@ -407,7 +407,7 @@ static ASTNode *parse_prefix(Parser *p) {
     /* Literals */
     if (match(p, TOKEN_INT_LIT)) {
         ASTNode *n = node_alloc(AST_INT_LIT, p->previous);
-        n->data.int_lit.value = p->previous.value.int_val;
+        n->data.int_lit.value = p->previous.value.uint_val;
         return n;
     }
     if (match(p, TOKEN_FLOAT_LIT)) {
@@ -1227,7 +1227,7 @@ void ast_print(const ASTNode *n, int ind) {
         case AST_VAR_REF:
             printf("Var %.*s\n", (int)n->data.var_ref.name.length, n->data.var_ref.name.start);
             break;
-        case AST_INT_LIT: printf("Int %lld\n", n->data.int_lit.value); break;
+        case AST_INT_LIT: printf("Int %llu\n", n->data.int_lit.value); break;
         case AST_FLOAT_LIT: printf("Float %g\n", n->data.float_lit.value); break;
         case AST_STRING_LIT: printf("Str \"%.*s\"\n", (int)n->data.string_lit.length, n->data.string_lit.value); break;
         case AST_CHAR_LIT: printf("Char '%c'\n", n->data.char_lit.value); break;

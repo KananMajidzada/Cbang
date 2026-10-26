@@ -1,0 +1,10 @@
+// type X = Y aliases must resolve in the type checker.
+use std.io;
+type unit_t = u64;
+
+pub fn main() i32 {
+    var u: unit_t = 9;
+    var v: unit_t = u + 1;
+    if (v == 10) { io.print("alias ok\n"); }
+    return 0;
+}

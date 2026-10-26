@@ -1,0 +1,12 @@
+// str indexing, .len and .ptr (cb_str is a struct, not an array).
+use std.io;
+
+pub fn main() i32 {
+    var s: str = "hello";
+    var c: i32 = s[1] as i32;
+    var p: *u8 = s.ptr;
+    if (s.len == 5 && c == 101 && p != 0) {
+        io.print("str ops ok\n");
+    }
+    return 0;
+}

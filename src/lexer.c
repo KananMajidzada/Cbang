@@ -243,15 +243,18 @@ static Token scan_number(Lexer *lexer) {
     if (is_float) {
         token.value.float_val = strtod(start, NULL);
     } else {
-        /* Handle different bases */
+        /* Handle different bases.
+           Literals are never negative here (negation is a unary op), so the
+           full u64 range can be read directly. strtoll() would saturate at
+           LLONG_MAX and silently truncate u64 max. */
         if (len >= 2 && start[0] == '0') {
             char c = start[1];
-            if (c == 'x' || c == 'X') token.value.int_val = strtoll(start, NULL, 16);
-            else if (c == 'b' || c == 'B') token.value.int_val = strtoll(start + 2, NULL, 2);
-            else if (c == 'o' || c == 'O') token.value.int_val = strtoll(start + 2, NULL, 8);
-            else token.value.int_val = strtoll(start, NULL, 10);
+            if (c == 'x' || c == 'X') token.value.uint_val = strtoull(start, NULL, 16);
+            else if (c == 'b' || c == 'B') token.value.uint_val = strtoull(start + 2, NULL, 2);
+            else if (c == 'o' || c == 'O') token.value.uint_val = strtoull(start + 2, NULL, 8);
+            else token.value.uint_val = strtoull(start, NULL, 10);
         } else {
-            token.value.int_val = strtoll(start, NULL, 10);
+            token.value.uint_val = strtoull(start, NULL, 10);
         }
     }
     return token;

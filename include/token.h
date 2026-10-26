@@ -95,6 +95,7 @@ typedef struct {
     size_t column;
     union {
         long long int_val;
+        unsigned long long uint_val;   /* integer literals: full u64 range */
         double float_val;
     } value;
 } Token;

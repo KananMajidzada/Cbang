@@ -1,0 +1,49 @@
+// Recursion, nested loops with break/continue, float math, logic.
+use std.io;
+use std.os;
+
+fn fib(n: i32) i32 {
+    if (n < 2) { return n; }
+    return fib(n - 1) + fib(n - 2);
+}
+
+fn nested() i32 {
+    var total: i32 = 0;
+    for (var i: i32 = 0; i < 5; i = i + 1) {
+        if (i == 2) { continue; }
+        for (var j: i32 = 0; j < 5; j = j + 1) {
+            if (j == 3) { break; }
+            total = total + i * j;
+        }
+    }
+    var w: i32 = 0;
+    while (w < 3) { w = w + 1; }
+    return total + w;
+}
+
+fn math() f64 {
+    var a: f64 = 3.5 * 2.0;
+    var b: i32 = 10 / 3;
+    var c: i32 = 7 % 3;
+    return a + b + c;
+}
+
+fn logic() bool {
+    var t: bool = true && !false;
+    var f: bool = false || (1 < 2);
+    return t && f;
+}
+
+fn strings() i32 {
+    var s: str = "abc";
+    return s.len as i32;
+}
+
+pub fn main() i32 {
+    if (fib(20) == 6765) { io.print("fib ok\n"); } else { os.exit(1); }
+    if (nested() == 27) { io.print("nested ok\n"); } else { os.exit(1); }
+    if (math() >= 11.0 && math() < 12.0) { io.print("math ok\n"); } else { os.exit(1); }
+    if (logic()) { io.print("logic ok\n"); } else { os.exit(1); }
+    if (strings() == 3) { io.print("strings ok\n"); } else { os.exit(1); }
+    return 0;
+}

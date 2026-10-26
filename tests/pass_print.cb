@@ -1,0 +1,36 @@
+// io.print must handle every printable type.
+use std.io;
+
+pub fn main() i32 {
+    io.print("str ok\n");
+
+    var a: i8 = -128;
+    var b: i32 = -42;
+    var c: i64 = -9000000000;
+    io.print("i8="); io.print(a);
+    io.print(" i32="); io.print(b);
+    io.print(" i64="); io.print(c);
+    io.print("\n");
+
+    var u: u64 = 18446744073709551615;
+    var u2: u32 = 4000000000;
+    io.print("u64max="); io.print(u);
+    io.print(" u32="); io.print(u2);
+    io.print("\n");
+
+    var f: f64 = 3.14;
+    var g: f32 = 1.5;
+    io.print("f64="); io.print(f);
+    io.print(" f32="); io.print(g);
+    io.print("\n");
+
+    var t: bool = true;
+    var fa: bool = false;
+    io.print("bool="); io.print(t);
+    io.print(" "); io.print(fa);
+    io.print("\n");
+
+    io.print(42);   // untyped literal
+    io.print("\n");
+    return 0;
+}

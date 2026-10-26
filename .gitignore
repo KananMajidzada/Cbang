@@ -3,6 +3,7 @@ build/
 
 # generated C files
 examples/*.c
+tests/*.c
 *.o
 
 # binaries

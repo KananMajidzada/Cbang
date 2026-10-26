@@ -1,0 +1,23 @@
+// Auto-deref: p.x works when p is a *Point (spec section 3.3).
+use std.io;
+
+pub struct Point {
+    i32 x;
+    i32 y;
+}
+
+pub fn move_point(p: *Point, dx: i32, dy: i32) void {
+    p.x = p.x + dx;
+    p.y = p.y + dy;
+}
+
+pub fn main() i32 {
+    var pt: Point;
+    pt.x = 10;
+    pt.y = 20;
+    move_point(&pt, 5, 5);
+    if (pt.x == 15 && pt.y == 25) {
+        io.print("Point moved correctly\n");
+    }
+    return 0;
+}
